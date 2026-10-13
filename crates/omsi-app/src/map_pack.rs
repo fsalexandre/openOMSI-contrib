@@ -59,7 +59,7 @@ pub fn pack(map: &str, to: &Path) -> Result<Packed> {
     }
     let t0 = Instant::now();
     eprintln!("Listing what {cfg} needs...");
-    let (files, missing) = crate::lan_mods::session_files(&cfg, None, None, None);
+    let (files, missing) = omsi_lan::mods::session_files(&cfg, None, None, None);
     let total: u64 = files.iter().filter_map(|(_, p)| omsi_cfg::vfs::file_size(p)).sum();
     eprintln!("{} files, {:.1} MB (listed in {:.1} s)", files.len(), total as f64 / 1e6, t0.elapsed().as_secs_f64());
     let zip = to.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"));

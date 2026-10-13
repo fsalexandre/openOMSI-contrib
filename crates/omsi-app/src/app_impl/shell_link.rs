@@ -43,7 +43,7 @@ impl App {
             self.shell.clear();
             return;
         };
-        // (the photo mode draws its own panel, `frame_photo_panel`)
+        // (the photo mode draws its own panel, `photo::panel`)
         if self.photo.is_some() {
             return;
         }
@@ -88,10 +88,17 @@ impl App {
             list,
             kbd: self.menus.menu_kbd,
             keys: !crate::platform::touch_controls(),
+            summary: self.pause_summary(),
         };
         self.shell.begin(w, h, scale, dt);
         crate::shell::pause::draw(&mut self.shell, &view);
         self.shell.finish();
+    }
+
+    /// What the pause menu's sidebar shows of the session: the bus and the driver.
+    fn pause_summary(&self) -> crate::shell::pause::Summary {
+        let bus = self.player.as_ref().map(|p| format!("{} {}", p.vehicle.ty.def.manufacturer.trim(), p.vehicle.ty.def.type_name.trim()).trim().to_string()).unwrap_or_default();
+        crate::shell::pause::Summary { bus, driver: self.args.lan_name.trim().to_string() }
     }
 
     /// What the clicks on the screens asked for, done (at the start of a frame, with the

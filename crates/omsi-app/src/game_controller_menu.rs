@@ -306,7 +306,7 @@ fn switched(now: bool, mv: Move) -> bool {
 
 fn save(app: &mut App, devices: Vec<DeviceCfg>) {
     match crate::controllers::save_cfg(&devices) {
-        Ok(()) => {
+        Ok(_) => {
             if let Some(c) = app.input.controllers.as_mut() { c.install_cfg(devices); }
             app.input.last_ctl_steer = None;
             app.service_msg = Some(("Controller configuration saved and applied".into(), 3.0));
@@ -431,6 +431,7 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str, mv: Move) -> Opt
 /// Called after the existing controller's single poll for this frame.
 pub(crate) fn frame(app: &mut App) {
     if matches!(app.menus.list_kind, Some(ListKind::ControllerDevices(_) | ListKind::Controller(..) | ListKind::ControllerAxis(..))) {
+        // (a rate limit of the list's refresh, nothing the game goes by)
         thread_local! {
             static LAST_REFRESH: std::cell::RefCell<std::time::Instant> = std::cell::RefCell::new(std::time::Instant::now());
         }

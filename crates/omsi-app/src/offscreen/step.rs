@@ -1,5 +1,6 @@
-//! One step of the offscreen run (1/30 s): the server's work, the traffic, the player's bus,
-//! the people, the LAN, the spray and the snapshots due.
+//! The stages of the offscreen run's step (a tick of the fixed step, 1/60 s; their order is
+//! `stages::OFFSCREEN_STEP`): the server's work, the traffic, the player's bus, the people, the
+//! LAN, the spray and the snapshots due.
 
 use super::*;
 use crate::view_sync::{self, ViewSync};
@@ -7,27 +8,20 @@ use crate::view_sync::{self, ViewSync};
 impl Offscreen<'_> {
     /// One step, the `i`-th (false: a server was told to stop).
     pub(super) fn step(&mut self, i: usize) -> Result<bool> {
-        let t_s = i as f32 * self.dt;
-        if self.server && !self.server_step(i) {
-            return Ok(false);
-        }
-        self.clock_step(t_s);
-        self.traffic_step(i, t_s)?;
-        self.player_step(i);
+        let mut step = stages::Step { run: self, i };
+        Ok(crate::frame_stages::run(&mut step, stages::OFFSCREEN_STEP)? == crate::frame_stages::Flow::Go)
+    }
+
+    /// The ground under the vehicles (`OMSI_GROUND_GAP`).
+    pub(super) fn ground_gap_step(&mut self, t_s: f32) {
         if let Some(g) = self.ground_gap.as_mut() {
             g.frame(&self.world, t_s, self.player.as_ref().map(|p| &p.vehicle), self.traffic.as_ref());
         }
-        self.humans_step(i);
-        self.lan_step();
-        self.surroundings_step();
-        self.snapshot_step(t_s)?;
-        self.record_step(i, t_s)?;
-        Ok(true)
     }
 
     /// The clock of this moment (`t_s` into the run; a dedicated server's own), and what the
     /// bus's scripts are told of it, as the window's `frame_weather` has them.
-    fn clock_step(&mut self, t_s: f32) {
+    pub(super) fn clock_step(&mut self, t_s: f32) {
         let mut clock = start_clock(self.args);
         if self.server {
             clock.advance((self.srv_clock + self.srv_admin.shift) as f32);
@@ -43,7 +37,7 @@ impl Offscreen<'_> {
 
     /// A dedicated server's clock, its METAR weather, its administration and its status
     /// (false: it was told to stop).
-    fn server_step(&mut self, i: usize) -> bool {
+    pub(super) fn server_step(&mut self, i: usize) -> bool {
         let (args, dt) = (self.args, self.dt);
         let Self {
             ref mut srv_clock,
@@ -65,7 +59,7 @@ impl Offscreen<'_> {
         } = *self;
         *srv_clock += dt as f64 * lan_off.as_ref().map(|l| l.clock_speed).unwrap_or(1.0);
         // a server on the real time (server.cfg): its clock reads this machine's
-        if i.is_multiple_of(30) && crate::real_time::server_real() {
+        if i.is_multiple_of(super::steps_in(1.0)) && crate::real_time::server_real() {
             if let Some(n) = crate::real_time::now() {
                 let have = (parse_time(&args.time) + *srv_clock + srv_admin.shift).rem_euclid(86400.0);
                 let off = (n.secs - have + 43_200.0).rem_euclid(86_400.0) - 43_200.0;
@@ -136,8 +130,9 @@ impl Offscreen<'_> {
                     if let Some(t) = traffic.as_mut() {
                         let ids: Vec<u64> = t.cars.iter().filter(|c| !c.is_bus()).map(|c| c.id).collect();
                         for id in &ids {
-                            t.remove_car(&mut sim_view.traffic, world, renderer, scene, *id);
+                            t.remove_car(*id);
                         }
+                        view_sync::apply_traffic(t, &mut sim_view.traffic, world, renderer, scene);
                         log::info!("server: {} AI vehicles taken off the road", ids.len());
                     }
                 }
@@ -178,7 +173,7 @@ impl Offscreen<'_> {
             log::info!("server: stopping");
             return false;
         }
-        if i.is_multiple_of(30) {
+        if i.is_multiple_of(super::steps_in(1.0)) {
             if let Some(l) = lan_off.as_mut() {
                 crate::server::enforce_vehicles(l);
                 crate::server::tick_status(l, parse_time(&args.time) + *srv_clock + srv_admin.shift, srv_weather_name.as_str());
@@ -201,7 +196,7 @@ impl Offscreen<'_> {
     }
 
     /// The AI traffic's step (and with it the timetable's departures).
-    fn traffic_step(&mut self, i: usize, t_s: f32) -> Result<()> {
+    pub(super) fn traffic_step(&mut self, i: usize, t_s: f32) -> Result<()> {
         let (args, out, w, h, dt, center) = (self.args, self.out, self.w, self.h, self.dt, self.center);
         let Self {
             ref mut traffic,
@@ -210,6 +205,7 @@ impl Offscreen<'_> {
             ref camera,
             ref settings,
             ref world,
+            ref mut scenery,
             ref mut renderer,
             ref mut scene,
             ref mut sim_view,
@@ -218,6 +214,7 @@ impl Offscreen<'_> {
             ref run_clock,
             ref envir,
             ref weather,
+            ref sky,
             ..
         } = *self;
         if let Some(t) = traffic.as_mut() {
@@ -234,19 +231,20 @@ impl Offscreen<'_> {
                 player.as_ref(),
                 &renderer.options,
             );
-            if i.is_multiple_of(60) {
+            if i.is_multiple_of(super::steps_in(2.0)) {
                 // (following a car, the population goes with the camera)
                 let pc = if args.follow.is_some() { view_cam.position } else { center };
-                t.populate(&mut sim_view.traffic, world, renderer, scene, pc);
+                t.populate(world, pc);
+                view_sync::apply_traffic(t, &mut sim_view.traffic, world, renderer, scene);
                 // (what the window does every frame: cars that parked become parked objects,
                 // released vehicles go back to the world)
-                view_sync::sync(ViewSync::traffic(t), sim_view, world, renderer, scene);
+                view_sync::sync(ViewSync::traffic(t, scenery), sim_view, world, renderer, scene);
                 // `OMSI_POPULATION_SHOTS=1` (with OMSI_DEBUG_POPULATION): a picture from the
                 // viewer whenever a car was put inside its frustum (behind something), with
                 // where on the picture it stands - to see that it really is hidden
                 let framed = std::mem::take(&mut t.framed_spawns);
                 if !framed.is_empty() && omsi_cfg::flags::OMSI_POPULATION_SHOTS.is_set() {
-                    view_sync::sync(ViewSync::traffic(t), sim_view, world, renderer, scene);
+                    view_sync::sync(ViewSync::traffic(t, scenery), sim_view, world, renderer, scene);
                     if let Some(p) = player.as_mut() {
                         pose_player(p, renderer, scene, args, settings);
                     }
@@ -257,6 +255,7 @@ impl Offscreen<'_> {
                         cloud_drift_at(weather, run_clock.time),
                         0.0,
                         settings.shadows,
+                        sky,
                     );
                     let pixels =
                         renderer.render_to_image(scene, w, h, &view_cam, &lighting)?;
@@ -283,7 +282,7 @@ impl Offscreen<'_> {
             if let Some(s) = schedule.as_mut() {
                 // at start, pick up trips that left within the last 20 minutes (a few per
                 // frame until they are all out, as the window does)
-                if i.is_multiple_of(60) || s.pending() > 0 {
+                if i.is_multiple_of(super::steps_in(2.0)) || s.pending() > 0 {
                     // no timetable vehicle is put into the player's bus or a LAN player's
                     steps::set_keep_clear(t, player.as_ref(), remotes_off);
                     steps::schedule_tick(s, world, t, &mut sim_view.traffic, renderer, scene, i == 0);
@@ -293,16 +292,23 @@ impl Offscreen<'_> {
             let daylight = omsi_sim::Daylight::compute(run_clock, envir.as_ref());
             steps::set_ai_daylight(t, daylight, steps::gloomy_weather(Some(weather)));
             let rail = player.as_ref().and_then(|p| p.rail.as_ref()).map(|r| (r.lane, r.along));
-            steps::traffic_tick(t, &mut sim_view.traffic, world, dt, false, player.as_ref(), remotes_off, &[], rail);
+            steps::traffic_tick(t, world, scenery, dt, false, player.as_ref(), remotes_off, &[], rail);
             steps::traffic_boxes(t, player.as_mut(), settings.collision_vehicles);
         }
         Ok(())
     }
 
-    /// The player's bus: its start-up, its duty, the personnel file, and the `--drive` test.
-    fn player_step(&mut self, i: usize) {
-        let (args, dt, drive_frames) = (self.args, self.dt, self.drive_frames);
-        let t_s = i as f32 * dt;
+    /// The player's bus starting up.
+    pub(super) fn startup_step(&mut self) {
+        let dt = self.dt;
+        if let Some(player) = self.player.as_mut() {
+            player.tick_startup(dt);
+        }
+    }
+
+    /// The player's duty and the personnel file.
+    pub(super) fn duty_step(&mut self) {
+        let (args, dt) = (self.args, self.dt);
         let Self {
             ref mut player,
             ref mut duty,
@@ -314,7 +320,6 @@ impl Offscreen<'_> {
             ..
         } = *self;
         let Some(player) = player.as_mut() else { return };
-        player.tick_startup(dt);
         if let Some(d) = duty.as_mut() {
             // (no plugins in an offscreen run: what they would be told goes to the log)
             let mut events = Vec::new();
@@ -342,8 +347,12 @@ impl Offscreen<'_> {
         for j in career.take_jolts() {
             log::info!("plugin event: jolt {j:?}");
         }
-        if i < drive_frames {
-            self.drive_step(i, t_s);
+    }
+
+    /// The `--drive` test's step while it runs.
+    pub(super) fn drive_stage(&mut self, i: usize) {
+        if self.player.is_some() && i < self.drive_frames {
+            self.drive_step(i, i as f32 * self.dt);
         }
     }
 
@@ -381,17 +390,7 @@ impl Offscreen<'_> {
         let Some(player) = player.as_mut() else { return omsi_sim::Controls::default() };
         for (name, at) in timed {
             if *at > t_s - dt && *at <= t_s {
-                // (a gate of a manual gearbox comes with the automatic clutch, as
-                // from the keys)
-                player.clutch_for_gate(name);
-                // (the game's door actions, `door_<n>` / `doors_all`, as a button
-                // pressed and let go)
-                if crate::player::door_action(name).is_some() {
-                    player.action(name, true);
-                    player.action(name, false);
-                } else {
-                    player.vehicle.trigger(name);
-                }
+                player.fire_timed(name);
             }
         }
         player.axes.clutch = (player.axes.clutch - 0.7 * dt).max(0.0);
@@ -515,6 +514,7 @@ impl Offscreen<'_> {
         let Self {
             ref mut player,
             ref world,
+            ref mut scenery,
             ref traffic,
             ref settings,
             ref snapshot_times,
@@ -543,14 +543,14 @@ impl Offscreen<'_> {
                 t.place_pivot(c - DVec3::new(h.sin(), h.cos(), 0.0) * t.pivot_length() as f64);
             }
         }
-        crate::rail_drive::frame(player, traffic.as_ref().map(|t| &t.net), world, dt);
+        crate::rail_drive::frame(player, traffic.as_ref().map(|t| &t.net), world, scenery, dt);
         // (the autopilot's log: where the bus is against the ground under it, twice a
         // second, and at once when the ground is not under it any more)
         if omsi_cfg::flags::OMSI_AUTOPILOT.is_set() {
             let at = player.vehicle.position;
-            let under = crate::scene::drive_probe(&world.terrains, &world.surfaces, at.x, at.y, at.z + 1.5).below;
+            let under = world.data.peek().drive_probe(at.x, at.y, at.z + 1.5).below;
             let lost = under.is_none_or(|g| at.z < g - 0.6);
-            if i.is_multiple_of(15) || lost {
+            if i.is_multiple_of(super::steps_in(0.5)) || lost {
                 log::info!("autopilot t={t_s:.1} at ({:.1}, {:.1}, {:.2}) heading {:.0} {:.0} km/h, ground under {:?}{}", at.x, at.y, at.z, player.vehicle.heading, player.vehicle.physics.velocity_kmh(), under.map(|g| (g * 100.0).round() / 100.0), if lost { " FELL" } else { "" });
             }
         }
@@ -600,7 +600,7 @@ impl Offscreen<'_> {
         }
         // what the window's HUD would say about a bus that does not move
         // (once per reason: the numbers in a line change all the time)
-        if i.is_multiple_of(30) {
+        if i.is_multiple_of(super::steps_in(1.0)) {
             let why = standing_reasons(&player.vehicle, &|a| crate::diagnostics::rebound_key(&player.bindings, a));
             let key = |l: &String| l.split('(').next().unwrap_or_default().to_string();
             for line in why
@@ -616,7 +616,7 @@ impl Offscreen<'_> {
         {
             let v = &player.vehicle;
             let g = world.ground_height(v.position.x, v.position.y).map(|g| v.position.z - g).unwrap_or(0.0);
-            let mut e = DRIVE_EXTREMES.lock();
+            let e = &mut self.drive_extremes;
             if v.pitch.abs() > e.0.abs() {
                 e.0 = v.pitch;
                 e.4 = (v.position, t_s);
@@ -634,7 +634,7 @@ impl Offscreen<'_> {
         }
         // `OMSI_TRACE_VARS=a,b,$c`: the listed variables every half second of the run
         // (a leading `$` reads a string variable) - how a start-up sequence unfolds
-        if i.is_multiple_of(15) {
+        if i.is_multiple_of(super::steps_in(0.5)) {
             if let Some(list) = omsi_cfg::flags::OMSI_TRACE_VARS.var() {
                 let vals: Vec<String> = list
                     .split(',')
@@ -658,7 +658,7 @@ impl Offscreen<'_> {
     }
 
     /// The people: their step, and what it means for the buses and the personnel file.
-    fn humans_step(&mut self, i: usize) {
+    pub(super) fn humans_step(&mut self, i: usize) {
         let (args, w, h, dt, view_aspect) = (self.args, self.w, self.h, self.dt, self.view_aspect);
         let Self {
             ref mut humans_off,
@@ -688,7 +688,7 @@ impl Offscreen<'_> {
             // player bus on a headless server), so stops on the actual map - which can
             // be thousands of metres away - fall outside the 600 m filter in
             // `populate_with` and are never seeded without this loop.
-            if i.is_multiple_of(60) {
+            if i.is_multiple_of(super::steps_in(2.0)) {
                 let player_centers: Vec<glam::DVec3> = remotes_off
                     .remotes
                     .values()
@@ -696,7 +696,8 @@ impl Offscreen<'_> {
                     .chain(player.as_ref().map(|p| p.vehicle.position))
                     .collect();
                 for c in &player_centers {
-                    h.populate(&mut sim_view.people, world, renderer, scene, *c);
+                    h.populate(world, *c);
+                    view_sync::apply_people(h, &mut sim_view.people, world, renderer, scene);
                 }
                 // also update which stops the LAN players are near
                 h.lan_centers = player_centers;
@@ -743,7 +744,7 @@ impl Offscreen<'_> {
     }
 
     /// The LAN session's step (with the clock a host tells the others).
-    fn lan_step(&mut self) {
+    pub(super) fn lan_step(&mut self) {
         let (args, dt) = (self.args, self.dt);
         let Self {
             ref mut lan_off,
@@ -753,6 +754,7 @@ impl Offscreen<'_> {
             ref run_clock,
             ref duty,
             ref mut remotes_off,
+            ref mut lan_world_off,
             ref world,
             ref renderer,
             ref mut scene,
@@ -778,8 +780,7 @@ impl Offscreen<'_> {
             // a host tells the others its clock (a client here keeps the one it started with;
             // a server's runs at its speed, moved by its admins)
             let clock = (l.role == omsi_net::Role::Host).then_some(run_clock);
-            let frame = lan::Frame {
-                audio: lan_audio.as_ref(),
+            let frame = lan::LanInput {
                 listener,
                 muffled: false,
                 riders: humans_off.as_ref().map(|h| h.riding()).unwrap_or(0),
@@ -788,22 +789,40 @@ impl Offscreen<'_> {
                 walker: None,
                 inside_of: None,
                 radio_keyed: false,
+                figure: player.as_ref().and_then(|p| p.driver.as_ref()).map(|d| d.human_type().def.path.clone()),
+                drawn: true,
             };
-            let updates = lan::tick(
+            let config = args.lan_config();
+            let host = lan::AppLanHost { args, world: Some(world) };
+            let sent = {
+                let traffic = traffic.as_ref();
+                let cars = || traffic.map(|t| t.cars.iter().map(|c| lan::car_footprint(&c.vehicle)).collect()).unwrap_or_default();
+                lan::tick_send(l, remotes_off, dt, &config, player.as_ref().map(|p| &p.vehicle), &cars, None, &frame)
+            };
+            lan_world_off.tick(
                 l,
-                remotes_off,
                 dt,
-                args,
-                player.as_mut(),
+                &config,
                 Some(world),
                 Some(renderer),
                 Some(scene),
                 traffic.as_mut(),
                 humans_off.as_mut(),
                 sim_view,
-                None,
+                player.as_ref().map(|p| p.vehicle.position),
+            );
+            let updates = lan::tick_receive(
+                l,
+                remotes_off,
+                sent,
+                dt,
+                &config,
+                &host,
+                player.as_mut().map(|p| &mut p.vehicle),
+                traffic.as_ref().map(|t| &t.net),
                 &frame,
             );
+            crate::view_sync::apply_lan(remotes_off, &mut sim_view.lan, world, renderer, scene, lan_audio.as_ref(), &frame, dt);
             for u in updates {
                 if let (lan::WorldUpdate::Tours(tours), Some(s)) = (u, schedule.as_mut()) {
                     s.set_lan_tours(tours);
@@ -816,7 +835,7 @@ impl Offscreen<'_> {
 
     /// The cabin air, the tyres' spray and the roads' wetness, frame by frame as the window's
     /// `frame_lights` and `frame_lighting` have them.
-    fn surroundings_step(&mut self) {
+    pub(super) fn surroundings_step(&mut self) {
         let (args, dt) = (self.args, self.dt);
         let Self {
             ref mut spray,
@@ -845,13 +864,13 @@ impl Offscreen<'_> {
                 .map(|c| c.position)
                 .or(player.as_ref().filter(|_| args.cam.is_none()).map(|p| p.vehicle.position))
                 .unwrap_or(camera.position);
-            steps::throw_spray(spray, dt, player.as_ref(), traffic.as_ref(), remotes_off, eye, steps::spray_wind(weather), world, spray_wet, crate::rain::quality());
+            steps::throw_spray(spray, dt, player.as_ref(), traffic.as_ref(), remotes_off, eye, steps::spray_wind(weather), world, spray_wet, world.settings.rain_quality());
         }
         *wetness = crate::weather_setup::road_wetness(precip_of(weather).1, dt as f64, *wetness);
     }
 
     /// A snapshot due at `t_s` (`--snapshots`).
-    fn snapshot_step(&mut self, t_s: f32) -> Result<()> {
+    pub(super) fn snapshot_step(&mut self, t_s: f32) -> Result<()> {
         let (args, out, w, h, dt) = (self.args, self.out, self.w, self.h, self.dt);
         // mid-run snapshots (relative to the first overtake with --follow auto)
         let traffic = self.traffic.as_ref();

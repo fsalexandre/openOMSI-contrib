@@ -40,7 +40,6 @@ impl DrawPlan {
         let needs = !cfg!(target_vendor = "apple") || remaining.iter().chain(&self.cab_batches)
             .any(|b| matches!(b.pipe / 4, PIPE_ALPHA_TEST | PIPE_BLEND | PIPE_BLEND_NO_WRITE));
         renderer.prepass_msaa_pipelines.is_some()
-            && (!self.has_presurface || renderer.presurface_msaa_pipelines.is_some())
             && f.enhanced && (f.with_overlays || f.xr_view) && renderer.options.msaa > 1
             && (!self.has_presurface || self.msaa_safe_batches.iter().any(|b| b.pipe / 2 != PIPE_ALPHA_TEST))
             && f.prepass_on && needs && !f.env.no_msaa_prepass
@@ -274,13 +273,23 @@ impl Renderer {
         // Keep mesh/material order here: an excavation's floor is drawn before its
         // invisible cover writes depth. Sorting its blended cover after the terrain
         // leaves the terrain's colour in place even though the cover writes depth.
-        let mut prepass_found = None;
+        // The prepass's batches are planned beside the main pass's on a worker - or by this
+        // thread itself when it is done with the main pass first and no worker has taken
+        // them up yet: it never waits for a job no one started (a worker the system had not
+        // got round to held up the whole frame).
+        let prepass_found = std::sync::Mutex::new(None);
+        let prepass_taken = std::sync::atomic::AtomicBool::new(!prepass_on);
+        let take_prepass = || {
+            if !prepass_taken.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                let found = prepass_job();
+                *prepass_found.lock().unwrap_or_else(|e| e.into_inner()) = Some(found);
+            }
+        };
         let pool = self.encoding_pool.as_ref();
         in_scope(pool, |scope| {
             if prepass_on {
-                let job = &prepass_job;
-                let slot = &mut prepass_found;
-                scope.spawn(move |_| *slot = Some(job()));
+                let take = &take_prepass;
+                scope.spawn(move |_| take());
             }
             let mut by_phase: [Vec<(usize, f32, bool)>; RenderPhase::COUNT] =
                 std::array::from_fn(|_| Vec::new());
@@ -325,8 +334,9 @@ impl Renderer {
             // (see `cab_batches` in the main pass).
             main_draws[1] += cab_items.len();
             batch_items(scene, &mut cab_items, false, list, &mut cab_batches);
+            take_prepass();
         });
-        if let Some((pre_list, mut pre_batches, mut safe_batches)) = prepass_found {
+        if let Some((pre_list, mut pre_batches, mut safe_batches)) = prepass_found.into_inner().unwrap_or_else(|e| e.into_inner()) {
             let offset = list.len() as u32;
             for b in pre_batches.iter_mut().chain(&mut safe_batches) {
                 b.instances = b.instances.start + offset..b.instances.end + offset;
@@ -478,6 +488,10 @@ impl Renderer {
     /// OMSI_PROFILE: the frame's counts, and every ten seconds what each asset costs.
     pub(crate) fn count_draws(&mut self, scene: &Scene, with_overlays: bool, visible: usize, plan: &DrawPlan, shadow_batches: &[Vec<Batch>; SHADOW_LISTS]) {
         let DrawPlan { main_batches, prepass_batches, main_draws, .. } = plan;
+        if with_overlays {
+            self.frame_draws.0 += main_batches.len() + prepass_batches.len() + shadow_batches.iter().map(Vec::len).sum::<usize>();
+            self.frame_draws.1 += visible;
+        }
         if self.profiling && !with_overlays {
             let mut c = self.counts.borrow_mut();
             *c.entry("mirror pictures").or_default() += 1.0;
@@ -492,6 +506,14 @@ impl Renderer {
             *c.entry("opaque draws").or_default() += main_draws[0] as f64;
             *c.entry("blended draws").or_default() += main_draws[1] as f64;
             *c.entry("main batches").or_default() += main_batches.len() as f64;
+            // the state the main pass's bundles set (each part starts afresh), and what an
+            // order by material within the opaque runs would set instead
+            let (pipes, binds) = state_changes(&bundle_chunks(self.encoding_pool.as_ref(), main_batches));
+            *c.entry("main pipeline switches").or_default() += pipes as f64;
+            *c.entry("main material binds").or_default() += binds as f64;
+            let (pipes_m, binds_m) = state_changes_by_material(main_batches);
+            *c.entry("main pipeline switches by material").or_default() += pipes_m as f64;
+            *c.entry("main material binds by material").or_default() += binds_m as f64;
             *c.entry("prepass batches").or_default() += prepass_batches.len() as f64;
             *c.entry("shadow batches").or_default() +=
                 (shadow_batches[0].len() + shadow_batches[1].len()) as f64;
@@ -539,31 +561,79 @@ impl Renderer {
             let format = if f.masked_frame { HDR_FORMAT } else { self.format };
             let batches = if plan.presurface_prefill(self, f) { &plan.main_batches[plan.presurface_batch_end..] } else { &plan.main_batches };
             let camera = scene.camera_bind_group.as_ref().expect("camera bind group");
-            // The window's bundles of the last frame are drawn again when this frame's
+            // The window's bundles of the last frame are drawn again where this frame's
             // batches are the same and name the same buffers and bind groups: a bundle holds
             // only which draws to make, and what the draws read (the instances' places, the
             // draw list) is in buffers written every frame. A view standing still - the bus
-            // at a stop - recorded the same thousand draws anew every frame.
+            // at a stop - recorded the same thousand draws anew every frame. This goes by
+            // part: when only the last parts changed (the blended draws, re-sorted as the
+            // traffic moves, come last), the parts before them are kept.
+            // The mirrors' the same, each its own (by its picture's texture): two or three
+            // mirror pictures a frame recorded some 1.5 ms of bundles each.
             let kept = f.with_overlays && f.projection.is_none() && !f.second_eye;
+            let mirror = (!f.with_overlays && !f.second_eye).then_some(f.exclude_texture).flatten();
             let mode = (f.enhanced, f.reflection_frame, format, self.options.msaa, rt_gbuf());
-            if kept {
-                if let Some(c) = self.main_bundles.borrow().as_ref() {
-                    if c.mode == mode && c.camera == *camera && c.batches == *batches && same_resources(scene, batches, &c.resources) {
-                        return c.bundles.clone();
+            let chunks = bundle_chunks(self.encoding_pool.as_ref(), batches);
+            let mut reuse: Vec<Option<wgpu::RenderBundle>> = vec![None; chunks.len()];
+            let mirrors = self.history.mirror_bundles.borrow();
+            let window = kept.then(|| self.history.main_bundles.borrow());
+            let last = match &window {
+                Some(w) => w.as_ref(),
+                None => mirror.and_then(|t| mirrors.iter().find(|m| m.0 == t).map(|m| &m.1)),
+            };
+            {
+                if let Some(c) = last {
+                    if c.mode == mode && c.camera == *camera {
+                        for (k, chunk) in chunks.iter().enumerate() {
+                            if let Some((b, r, bundle)) = c.parts.get(k) {
+                                if *b == **chunk && same_resources(scene, chunk, r) {
+                                    reuse[k] = Some(bundle.clone());
+                                }
+                            }
+                        }
+                        if reuse.iter().all(Option::is_some) && c.parts.len() == chunks.len() {
+                            if kept {
+                                self.history.bundle_stats.set((0, reuse.len()));
+                            }
+                            return reuse.into_iter().flatten().collect();
+                        }
                     }
                 }
             }
-            let bundles = record_bundles(&self.device, self.encoding_pool.as_ref(), scene, batches, pp, camera, format, self.options.msaa);
-            // (not when a part could not be recorded: it would be left out frame after frame)
-            let whole = bundles.len() == bundle_parts(self.encoding_pool.as_ref(), batches.len());
-            *self.main_bundles.borrow_mut() = (kept && whole).then(|| MainBundles {
+            let kept_parts = reuse.iter().filter(|b| b.is_some()).count();
+            if f.with_overlays {
+                self.history.bundle_stats.set((chunks.len() - kept_parts, kept_parts));
+            }
+            let bundles = record_bundles(&self.device, self.encoding_pool.as_ref(), scene, &chunks, &reuse, pp, camera, format, self.options.msaa);
+            // (not when a part could not be recorded: it would be left out frame after frame;
+            // and a mirror's or an eye's picture leaves the window's alone - it cleared them,
+            // so with the mirrors on the window never kept a bundle)
+            drop((window, mirrors));
+            let whole = bundles.iter().all(Option::is_some);
+            let made = || MainBundles {
                 mode,
                 camera: camera.clone(),
-                batches: batches.to_vec(),
-                resources: batch_resources(scene, batches),
-                bundles: bundles.clone(),
-            });
-            bundles
+                parts: chunks
+                    .iter()
+                    .zip(&bundles)
+                    .map(|(chunk, b)| (chunk.to_vec(), batch_resources(scene, chunk), b.clone().expect("whole")))
+                    .collect(),
+            };
+            if kept {
+                *self.history.main_bundles.borrow_mut() = whole.then(made);
+            } else if let Some(t) = mirror {
+                let mut mirrors = self.history.mirror_bundles.borrow_mut();
+                mirrors.retain(|m| m.0 != t);
+                if whole {
+                    // (a few: a bus has some mirrors, and a texture of one gone stays no longer
+                    // than it takes the others to come round)
+                    if mirrors.len() >= 8 {
+                        mirrors.remove(0);
+                    }
+                    mirrors.push((t, made()));
+                }
+            }
+            bundles.into_iter().flatten().collect()
         } else {
             Vec::new()
         }
@@ -574,9 +644,8 @@ impl Renderer {
 pub(crate) struct MainBundles {
     mode: (bool, bool, wgpu::TextureFormat, u32, bool),
     camera: wgpu::BindGroup,
-    batches: Vec<Batch>,
-    resources: Vec<BatchResources>,
-    bundles: Vec<wgpu::RenderBundle>,
+    /// each bundle with the batches it was recorded from and what they bound
+    parts: Vec<(Vec<Batch>, Vec<BatchResources>, wgpu::RenderBundle)>,
 }
 
 /// What a recorded batch binds: its mesh's buffers and place in them, and its material's
@@ -612,6 +681,19 @@ mod tests {
     use super::sort_blended_draws;
     use crate::{AlphaMode, MeshData, RenderOptions, Renderer};
     use glam::{DVec3, Mat4, Vec3};
+
+    #[test]
+    fn state_changes_count_what_the_encoder_sets() {
+        use crate::frame_plan::{state_changes, state_changes_by_material, Batch};
+        let b = |pipe: u8, material: u32| Batch { pipe, mesh: 0, first: 0, count: 3, material, instances: 0..1 };
+        // opaque culled (pipe 2) and not culled (pipe 0) of two looks, then a blended one
+        let batches = [b(0, 1), b(0, 2), b(2, 1), b(2, 2), b(8, 1)];
+        assert_eq!(state_changes(&[&batches]), (3, 5));
+        // two parts: each sets its own state
+        assert_eq!(state_changes(&[&batches[..3], &batches[3..]]), (4, 5));
+        // by material: 1 1 2 2 then blended 1 - fewer binds, more pipeline switches
+        assert_eq!(state_changes_by_material(&batches), (5, 3));
+    }
 
     #[test]
     fn recycled_display_layers_keep_model_order_after_distance_and_camera_rank() {

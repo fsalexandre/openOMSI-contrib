@@ -33,13 +33,18 @@ pub(crate) fn season_folder_on(args: &Args, global: &omsi_map::GlobalCfg, day_of
 pub(crate) fn open_world(args: &Args) -> Result<(World, Camera, DVec3)> {
     let map_cfg = omsi_cfg::resolve_path(&args.root, &args.map);
     let date = start_clock(args).date_code();
-    let world = match crate::duty_start::take_preopened(&map_cfg, date) {
+    let world = match args.preopened.take(&map_cfg, date) {
         Some(w) => w,
         None => World::open(&args.root, &map_cfg, date)?,
     };
     *world.start_clock.lock() = start_clock(args);
+    // the session's settings the world's loading reads, and whether its weather lies as snow
+    // (the panes of the vehicles that go onto the GPU wear it)
+    args.session_settings.apply_to(&world);
     {
-        let (kind, folder) = season_folder(args, &world.global);
+        let weather = load_weather(args);
+        world.settings.set_snow(weather.snow);
+        let (kind, folder) = season_folder_on(args, &world.global, start_clock(args).day_of_year, weather.snow, weather.snow_on_road);
         log::info!(
             "season: day {} -> kind {kind} (texture folder {:?})",
             start_clock(args).day_of_year,

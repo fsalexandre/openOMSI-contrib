@@ -86,6 +86,9 @@ fn summary() -> crate::journey::TripSummary {
         ],
         km: Some(3.6),
         served: (4, 5),
+        on_time: 3,
+        driven: Some(690.0),
+        rating: Some(crate::journey::TripRating { driving: 82.0, comfort: 95.0, tickets: 60.0, passengers: 23, tickets_asked: 9 }),
         stem: "preview".into(),
         dir: std::env::temp_dir(),
     }
@@ -94,8 +97,7 @@ fn summary() -> crate::journey::TripSummary {
 #[test]
 #[ignore]
 fn preview() {
-    let quick = quick_menu::QuickMenu { sub: Some("station") };
-    picture("game-panels-quick.png", &[(quick.panel_of(true, true), Some("repair"))]);
+    picture("game-panels-quick.png", &[(quick_menu::QuickMenu.panel_of(true), Some("repair"))]);
     picture("game-panels-trip.png", &[(trip_summary::TripPanel::new(summary()).panel(), Some("save"))]);
     let form = dest_form::DestForm { route: "137".into(), lines: ["Sonderfahrt".into(), "Betriebshof".into()], ..Default::default() };
     picture("game-panels-dest.png", &[(form.panel(), Some("select"))]);

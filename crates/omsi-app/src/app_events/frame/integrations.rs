@@ -7,7 +7,7 @@ impl App {
     /// to do), `OMSI_WATCH_VARS`, and the people's counts for the personnel file.
     pub(super) fn frame_integrations(&mut self, event_loop: &ActiveEventLoop, dt: f32) {
         // Discord's status: the map, the bus, the line (every few seconds)
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
             self.integrations.discord_t -= dt;
             if self.integrations.discord_t <= 0.0 {
@@ -47,6 +47,9 @@ impl App {
         if !plugins.is_empty() {
             self.plugin_watch(&mut plugins);
         }
+        // the mouse on the plugins' script textures since their frame, and which those are now
+        plugins.pointer = std::mem::take(&mut self.integrations.plugin_pointer.pending);
+        self.integrations.plugin_pointer.pages = plugins.pointer_textures();
         if !plugins.is_empty() && !self.paused {
             let keys = std::mem::take(&mut self.integrations.plugin_keys);
             let events = std::mem::take(&mut self.integrations.plugin_events);

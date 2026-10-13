@@ -13,13 +13,19 @@ pub(crate) fn script_texture_dir(osn: &Path) -> PathBuf {
 
 /// Write the player's bus's script textures beside the situation `osn` was saved to.
 pub(crate) fn save_script_textures(osn: &Path, vehicle: &omsi_sim::VehicleInstance) {
+    let all: Vec<(&[u8], u32, u32)> = vehicle.host.script_textures.iter().map(|st| (&st.rgba[..], st.width, st.height)).collect();
+    write_script_textures(osn, &all);
+}
+
+/// [`save_script_textures`] from the textures' pixels (rgba, width, height), in their order.
+pub(crate) fn write_script_textures<P: AsRef<[u8]>>(osn: &Path, textures: &[(P, u32, u32)]) {
     let dir = script_texture_dir(osn);
     let _ = std::fs::remove_dir_all(&dir);
-    if vehicle.host.script_textures.is_empty() || std::fs::create_dir_all(&dir).is_err() {
+    if textures.is_empty() || std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    for (i, st) in vehicle.host.script_textures.iter().enumerate() {
-        if let Err(e) = image::save_buffer(dir.join(format!("{i}.png")), &st.rgba, st.width, st.height, image::ColorType::Rgba8) {
+    for (i, (rgba, width, height)) in textures.iter().enumerate() {
+        if let Err(e) = image::save_buffer(dir.join(format!("{i}.png")), rgba.as_ref(), *width, *height, image::ColorType::Rgba8) {
             log::warn!("saving script texture {i} beside {}: {e}", osn.display());
         }
     }
@@ -50,12 +56,21 @@ pub(crate) fn find_hof(
     world: &World,
     vt: &omsi_sim::VehicleType,
 ) -> Option<std::sync::Arc<omsi_vehicle::Hof>> {
+    find_hof_named(args.hof.as_deref(), world, vt)
+}
+
+/// [`find_hof`] with the depot asked for (`--hof`) given alone.
+pub(crate) fn find_hof_named(
+    hof: Option<&str>,
+    world: &World,
+    vt: &omsi_sim::VehicleType,
+) -> Option<std::sync::Arc<omsi_vehicle::Hof>> {
     let dir = vt.def.dir();
     let mut names: Vec<String> = Vec::new();
-    if let Some(h) = &args.hof {
-        names.push(h.clone());
+    if let Some(h) = hof {
+        names.push(h.to_string());
     }
-    names.extend(world.ailists.groups.iter().filter_map(|g| g.hof.clone()));
+    names.extend(world.map().ailists.groups.iter().filter_map(|g| g.hof.clone()));
     // every wanted name in order: the bus's own depot files first (by file name, then by
     // the [name] inside), then the map's depot as another vehicle folder has it (a mod bus
     // brings only the depot of its own map: see `omsi_vehicle::hof::depot_anywhere`)
@@ -95,18 +110,7 @@ pub(crate) fn find_hof(
 }
 
 pub(crate) fn start_clock(args: &Args) -> omsi_sim::SimClock {
-    let mut c = omsi_sim::SimClock::default();
-    if let Some(d) = &args.date {
-        let v: Vec<i32> = d.split('-').filter_map(|x| x.trim().parse().ok()).collect();
-        if v.len() == 3 {
-            c.set_date(v[0], v[1], v[2]);
-        }
-    }
-    if let Some(doy) = args.day_of_year {
-        c.day_of_year = doy.max(1);
-    }
-    c.time = parse_time(&args.time);
-    c
+    omsi_sim::SimClock::starting(args.date.as_deref(), args.day_of_year, &args.time)
 }
 
 /// Fill the arguments from a situation file (`.osn`): the original's saved game state.

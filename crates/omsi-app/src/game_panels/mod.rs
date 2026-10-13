@@ -135,10 +135,18 @@ impl crate::App {
                 _ => {}
             }
         }
-        // the trip's summary, when one has just ended (and the setting wants it)
-        if let Some(s) = self.session.journey.as_mut().and_then(|j| j.take_summary()) {
+        // A completed trip's summary waits until the bus stops: the panel takes the mouse.
+        let speed = self.player.as_ref().map_or(f32::INFINITY, |p| p.vehicle.physics.velocity_kmh());
+        let still = if self.paused { 0.0 } else { dt };
+        if let Some(j) = self.session.journey.as_mut() {
             if self.settings.trip_summary {
-                self.menus.game_panels.trip = Some(trip_summary::TripPanel::new(s));
+                if let Some(s) = j.take_summary_when_stopped(speed, still) {
+                    self.menus.game_panels.trip = Some(trip_summary::TripPanel::new(s));
+                }
+            } else {
+                // Disabled summaries are consumed, so enabling the setting later cannot
+                // open a report from an earlier trip. The quick menu still has it.
+                j.take_summary();
             }
         }
         let panels: Vec<(&str, Option<Panel>)> = vec![
@@ -161,7 +169,11 @@ impl crate::App {
         }
         let (Some(r), Some(scene)) = (self.renderer.as_ref(), self.scene.as_mut()) else { return };
         let dpi = self.window.as_ref().map_or(1.0, |w| w.scale_factor() as f32);
-        let size = crate::ui::size_factor(hud[3], dpi, self.settings.ui_scale, self.settings.ui_scale_window);
+        let mut size = crate::ui::size_factor(hud[3], dpi, self.settings.ui_scale, self.settings.ui_scale_window);
+        // (the trip's summary shrinks to fit a small screen - a phone - rather than spill off it)
+        if let Some((w, h)) = self.menus.game_panels.trip.as_ref().map(|t| t.extent()) {
+            size = size.min(hud[2] * 0.96 / (w * dpi)).min(hud[3] * 0.96 / (h * dpi));
+        }
         let map_open = self.menus.navigator.as_ref().is_some_and(|n| n.map_open());
         let hidden = vr_active || self.menus.game_menu.is_some() || self.menus.chooser.is_some() || map_open || self.photo.is_some();
         let frame = crate::plugin_ui::PanelsFrame {
@@ -188,6 +200,14 @@ impl crate::App {
     /// Whether the game's panels have the mouse.
     pub(crate) fn game_panels_mouse(&self) -> bool {
         self.menus.game_panels.focused()
+    }
+
+    pub(crate) fn game_panel_touch(&mut self, x: f32, y: f32) -> bool {
+        if !self.game_panels_mouse() {
+            return false;
+        }
+        self.input.cursor = (x, y);
+        self.game_panel_click(true)
     }
 
     /// The left button while the panels have the mouse: a press on a button goes to it, a

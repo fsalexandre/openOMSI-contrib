@@ -1,19 +1,23 @@
-//! The window's frame (`WindowEvent::RedrawRequested`): its steps in order in `App::frame`,
-//! each a method of its own in the files beside this one. What the offscreen run takes as
-//! well is in `steps`.
+//! The window's frame (`WindowEvent::RedrawRequested`): its stages in their lists in `stages`
+//! (once a frame, once per tick of the fixed simulation step, once a frame again: `ticked`),
+//! taken by the runner of `frame_stages`, each a function of its own in the files beside this
+//! one. What the offscreen run takes as well is in `steps`.
 
 use super::*;
 use crate::view_sync::{self, ViewSync};
 
 mod controls;
+mod drawn;
 mod driving;
 mod integrations;
 mod interface;
 mod people;
 mod present;
 mod road;
+pub(crate) mod stages;
 pub(crate) mod steps;
 mod surroundings;
+mod ticked;
 mod timing;
 mod view_camera;
 mod view_keys;
@@ -27,49 +31,48 @@ pub(super) struct FrameTime {
 }
 
 impl App {
-    /// One frame of the window, step by step.
+    /// One frame of the window: its stages in their lists and ticks (see `ticked`).
     pub(super) fn frame(&mut self, event_loop: &ActiveEventLoop) {
-        // the session's housekeeping, the graphics device, the frame's time (none: the
-        // session ends)
-        let Some(time) = self.frame_timing(event_loop) else { return };
-        let dt = time.dt;
-        // what the pause menu's clicks of the last frame asked for
-        self.apply_shell_actions(event_loop);
-        // a vehicle chosen in the menu, read on a worker meanwhile, put down once it is ready
-        self.poll_vehicle_placement();
-        // the start menu, and the map's first area still loading
-        if !self.frame_menus(event_loop, dt) {
-            return;
+        // (the window's stages do not fail)
+        if let Err(e) = self.frame_ticked(event_loop) {
+            log::error!("frame: {e:#}");
         }
-        let __t = Instant::now();
-        self.drive_streaming();
-        *self.perf.profile.entry("streaming").or_default() += __t.elapsed().as_secs_f64();
-        self.frame_traffic(dt);
-        // The player's vehicle moves before the passengers are placed: they sit in
-        // the bus frame, and placing them on the pose of the frame before made everyone
-        // aboard tremble at speed (a quarter of a metre behind the seat, every frame).
-        let __t = Instant::now();
-        let (analog, actions) = self.frame_controllers(dt);
-        let analog = self.frame_mouse_drive(dt, analog);
-        self.frame_pad_actions(analog, actions);
-        self.frame_player(dt);
-        self.frame_audio(dt);
-        *self.perf.profile.entry("player").or_default() += __t.elapsed().as_secs_f64();
-        self.frame_people(dt);
-        self.frame_duty(dt);
-        self.frame_integrations(event_loop, dt);
-        self.frame_view_keys(dt);
-        let daylight = self.frame_weather(dt);
-        self.frame_lights(dt, daylight);
-        self.frame_scripted(dt, daylight);
-        if let (Some(w), Some(p)) = (self.world.as_deref(), self.player.as_mut()) {
-            crate::wheel_surface::tell_scripts(w, &mut p.vehicle);
+    }
+}
+
+crate::app::stage_ctx!(
+    /// The wheel surface stage's part of the game.
+    WheelSurfaceCx { reads: [world], writes: [player] }
+);
+
+/// What the bus's scripts are told of the ground under its wheels.
+pub(super) fn wheel_surface(cx: WheelSurfaceCx) {
+    if let (Some(w), Some(p)) = (cx.world.world.as_deref(), cx.player.player.as_mut()) {
+        crate::wheel_surface::tell_scripts(w, &mut p.vehicle);
+    }
+}
+
+crate::app::stage_ctx!(
+    /// The look trace's part of the game (its file is the run's own, as the logs are).
+    TraceLookCx { reads: [input, view], writes: [perf] }
+);
+
+/// `OMSI_TRACE_LOOK=<csv>`: the frame's line (`frame`) with the cursor, the head's turn and the
+/// camera drawn last.
+pub(super) fn trace_look(cx: TraceLookCx) {
+    let Some(path) = omsi_cfg::flags::OMSI_TRACE_LOOK.var() else { return };
+    use std::io::Write;
+    static FILE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+    let mut g = FILE.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() {
+        *g = std::fs::File::create(path).ok();
+        if let Some(f) = g.as_mut() {
+            let _ = writeln!(f, "t,what,x,y,look_yaw,look_pitch,cam_yaw,cam_pitch,mouse_look,grab");
         }
-        // the photo mode's camera and panel
-        self.frame_photo(time.raw_dt);
-        let vr_nav_display = self.frame_ui(dt);
-        let lighting = self.frame_lighting(dt, daylight);
-        self.trace_look("frame", self.input.cursor.0, self.input.cursor.1);
-        self.frame_render(event_loop, &time, &lighting, vr_nav_display);
+    }
+    let (input, look) = (&**cx.input, cx.view.cam.look);
+    let (x, y) = input.cursor;
+    if let (Some(f), Some(c)) = (g.as_mut(), cx.view.camera.as_ref()) {
+        let _ = writeln!(f, "{:.4},frame,{x:.1},{y:.1},{:.3},{:.3},{:.3},{:.3},{},{:?}", cx.common.started.elapsed().as_secs_f64(), look.0, look.1, c.yaw, c.pitch, input.mouse_look as u8, input.mouse_grab.mode);
     }
 }

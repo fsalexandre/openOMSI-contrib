@@ -4,12 +4,15 @@ use super::*;
 
 mod groups;
 pub(crate) use groups::*;
+mod parts;
+pub(crate) use parts::*;
 
 const SLOW_UPLOAD_MB_S: f64 = 300.0;
 
 /// The loading screen's colour (the sky of its blank camera, see `drive_start`): what the
-/// game's window shows before its renderer is there.
-const LOADING_BACKGROUND: wgpu::Color = wgpu::Color { r: 0.08, g: 0.10, b: 0.14, a: 1.0 };
+/// game's window shows before its renderer is there - the loading screen's own #121212 (in
+/// linear light), so the window does not show a blue-grey before it.
+const LOADING_BACKGROUND: wgpu::Color = wgpu::Color { r: 0.0060, g: 0.0060, b: 0.0060, a: 1.0 };
 
 /// The game window's start while its renderer is being built (see `App::create_window`).
 pub(crate) struct WindowStart {
@@ -52,7 +55,7 @@ pub(crate) struct App {
     pub(crate) world: Option<Arc<World>>,
     /// Where the camera looks from and to, per view (see `ViewState`).
     pub(crate) cam: ViewState,
-    /// Chat, mouse-over names and name tags (Roboto).
+    /// Chat, mouse-over names and name tags (Inter).
     pub(crate) ui: Option<ui::Ui>,
     /// Frame timing, profiling and the test hooks (see `PerfState`).
     pub(crate) perf: PerfState,
@@ -80,8 +83,14 @@ pub(crate) struct App {
     pub(crate) shell: crate::shell::Shell,
     /// The photo mode, while it is on.
     pub(crate) photo: Option<crate::photo::Photo>,
+    /// The photo mode's settings, kept from one photo to the next in the session.
+    pub(crate) photo_settings: Option<crate::photo::Settings>,
     /// The developer tools, while they are open (Ctrl+Shift+D).
     pub(crate) devtools: Option<Box<crate::devtools::DevTools>>,
+    /// The simulation's fixed step (see `app_events/frame/ticked.rs`).
+    pub(crate) fixed_tick: omsi_sim::tick::SimTicks,
+    /// The sim thread and the steps out on it while the picture is drawn (`OMSI_SIM_THREAD`).
+    pub(crate) pipeline: crate::sim_thread::Pipeline,
 }
 
 impl App {
@@ -92,6 +101,7 @@ impl App {
     pub(crate) fn vr_active(&self) -> bool { false }
 
     pub(crate) fn resumed_impl(&mut self, event_loop: &ActiveEventLoop) {
+        crate::frame_stages::log_order();
         if let Some(window) = self.window.clone() {
             // back from the background (a phone): the window's surface is made again (on the
             // device whose renderer is still being built, while it is)
@@ -220,7 +230,7 @@ impl App {
                 }
             },
         };
-        let start = match crate::startup::RendererStart::begin(&mut self.gfx.instance, &window, self.settings.render_options()) {
+        let start = match crate::startup::RendererStart::begin(&mut self.gfx.instance, &window, self.args.session_settings.render_options(&self.settings)) {
             Ok(s) => s,
             Err(e) => {
                 fatal_message(&format!("The game cannot draw on this computer: {e:#}"));
@@ -385,7 +395,9 @@ impl App {
     fn load_world_with(&mut self, event_loop: &ActiveEventLoop, opened: Option<Result<(World, Camera, DVec3)>>) {
         // a joining player loads the host's date, time, weather and season (after the menu)
         if let Some(l) = self.net.lan.as_mut() {
-            lan::adopt_host_world(&mut self.args, l, &mut self.net.remotes);
+            let mut c = self.args.lan_config();
+            lan::adopt_host_world(&mut c, &crate::app_impl::lan_tick::AppLanHost { args: &self.args, world: None }, l, &mut self.net.remotes);
+            self.args.take_lan_config(&c);
         }
         let renderer = self.renderer.take().expect("renderer");
         let mut scene = renderer.new_scene();
@@ -402,12 +414,14 @@ impl App {
             log::info!("weather cycle: starting with {:?}", self.args.weather);
             self.session.weather_cycle = Some(c);
         }
-        self.session.weather = Some(load_weather(&self.args));
+        let (weather, model) = load_weather_run(&self.args);
+        self.session.weather = Some(weather);
+        self.session.sky.model = model;
         // the roads start in the state this weather has already left them in, as they do
         // offscreen: a session begun in the rain used to open on a bone-dry street
         self.session.wetness = self.session.weather.as_ref().map(initial_wetness).unwrap_or(0.0);
         self.clock = start_clock(&self.args);
-        setup_sky(&self.args, &renderer, &mut scene, self.session.envir.as_ref(), self.session.weather.as_ref());
+        setup_sky(&self.args, &renderer, &mut scene, self.session.envir.as_ref(), self.session.weather.as_ref(), &mut self.session.sky.clouds);
         // the window streams the tiles around the camera unless a fixed area was asked for
         if !self.args.all && self.args.radius.is_none() {
             match opened.unwrap_or_else(|| open_world(&self.args)) {
@@ -485,6 +499,7 @@ impl App {
                 match spawned {
                     Ok(mut p) => {
                         let audio = omsi_audio::AudioEngine::new();
+                        audio.set_doppler(self.settings.doppler);
                         if let Some(p) = p.as_mut() {
                             p.vehicle.host.auto_clutch = if self.settings.auto_clutch { 1.0 } else { 0.0 };
                             p.load_sounds(&audio);
@@ -584,8 +599,10 @@ impl App {
                     if let Some(p) = self.player.as_ref() {
                         if self.args.riders > 0 {
                             let centre = p.vehicle.position;
-                            h.populate(&mut self.gfx.sim_view.people, &w, &renderer, &mut scene, centre);
-                            h.seed_riders(&mut self.gfx.sim_view.people, self.args.riders, &p.vehicle, &w, &renderer, &mut scene);
+                            h.populate(&w, centre);
+                            crate::view_sync::apply_people(&mut h, &mut self.gfx.sim_view.people, &w, &renderer, &mut scene);
+                            h.seed_riders(self.args.riders, &p.vehicle, &w);
+                            crate::view_sync::apply_people(&mut h, &mut self.gfx.sim_view.people, &w, &renderer, &mut scene);
                         }
                     }
                     self.session.humans = Some(h);
@@ -615,6 +632,10 @@ impl App {
                     if self.args.schedule {
                         let mut sch =
                             schedule::Schedule::new(&self.args.root, &w, &start_clock(&self.args));
+                        // (the tours' buses drawn alike on every machine of a LAN game)
+                        if let Some(lan) = self.net.lan.as_ref() {
+                            sch.sim.vehicle_seed = omsi_script::mix_seed(lan::population_seed(lan) ^ 0x746f_7572_5f62_7573);
+                        }
                         sch.precache(
                             &w,
                             &renderer,
@@ -681,7 +702,7 @@ impl App {
                 }
                 if self.session.traffic.is_none() {
                     if let Some(n) = self.menus.navigator.as_mut() {
-                        n.add_lanes(std::mem::take(&mut *w.lanes.lock()));
+                        n.add_lanes(omsi_sim::world_data::TrafficArrivals::gather(w.traffic_inbox.take()).lanes);
                     }
                 }
                 if let (Some(lan), Some(p)) = (self.net.lan.as_mut(), self.player.as_mut()) {
@@ -709,12 +730,12 @@ impl App {
     pub(crate) fn drive_start(&mut self, event_loop: &ActiveEventLoop) -> bool {
         let Some(cam) = self.cam.starting.take() else {
             // a joining player's bus goes to a server that lacks it before the drive starts,
-            // so the others see it from its first metre (`lan_mods::upload`)
-            let Some((caption, progress)) = crate::lan_mods::upload::loading() else {
+            // so the others see it from its first metre (`omsi_lan::mods::upload`)
+            let Some((caption, progress)) = omsi_lan::mods::upload::loading() else {
                 return true;
             };
             if let (Some(renderer), Some(scene)) = (self.renderer.take(), self.scene.take()) {
-                self.loading_frame(renderer, scene, "Getting your bus to the server", &caption, progress);
+                self.loading_frame(renderer, scene, &caption, progress);
             }
             return false;
         };
@@ -737,6 +758,13 @@ impl App {
             None => None,
         };
         let Some((done, total)) = progress else {
+            // (the loading screen, if it showed, runs its bar to the end and fades over the
+            // first pictures: `frame_ui`)
+            self.menus.loading.finish();
+            // (how long it took, for the next load of this map's bar)
+            if self.menus.loading.elapsed() > 0.0 {
+                crate::ui::LoadTimes::record(&self.args.map, self.menus.loading.elapsed());
+            }
             let w = self.world.clone().expect("world");
             log::info!(
                 "map ready after {:.2} s: {} tiles loaded",
@@ -747,9 +775,13 @@ impl App {
             self.renderer = Some(renderer);
             self.scene = Some(scene);
             if let Some(p) = self.player.as_ref() {
-                crate::lan_mods::upload::begin(&self.args.root, &crate::lan::content_relative(&p.vehicle.ty.def.path, &self.args.root), &crate::lan::current_paint(&self.args, &p.vehicle), crate::lan_mods::upload::own_files(&self.args.root, p));
+                let cfg = self.args.lan_config();
+                let root = self.args.root.clone();
+                let bus = omsi_lan::game::content_relative(&p.vehicle.ty.def.path, &root);
+                let paint = omsi_lan::game::current_paint(&cfg, &p.vehicle);
+                omsi_lan::mods::upload::begin(&root, &bus, &paint, omsi_lan::mods::upload::own_files(&root, &p.vehicle));
             }
-            return crate::lan_mods::upload::loading().is_none();
+            return omsi_lan::mods::upload::loading().is_none();
         };
         let name = self
             .world
@@ -762,7 +794,16 @@ impl App {
                 }
             })
             .unwrap_or_default();
-        self.loading_frame(renderer, scene, name.trim(), "", done as f32 / total.max(1) as f32);
+        // (the bar eases towards the count: it came in unevenly and jumped to its end)
+        let dt = self.menus.loading.tick();
+        if self.menus.loading.expected <= 0.0 {
+            self.menus.loading.expected = crate::ui::LoadTimes::expected(&self.args.map).unwrap_or(crate::ui::LOADING_FIRST_GUESS);
+            log::info!("loading: {:.1} s expected for {}", self.menus.loading.expected, self.args.map);
+        }
+        self.menus.loading.step(done as f32 / total.max(1) as f32, dt);
+        self.menus.loading.title = name.trim().to_string();
+        let shown = self.menus.loading.shown();
+        self.loading_frame(renderer, scene, name.trim(), shown);
         self.cam.starting = Some(cam);
         if let Some(limit) = self.args.exit_after {
             if self.started.elapsed().as_secs_f32() > limit {
@@ -774,8 +815,8 @@ impl App {
     }
 
     /// One picture of the loading screen (the map's first area, or a joining player's bus
-    /// going to the server): `title`, a bar at `progress` and the line `caption` under it.
-    fn loading_frame(&mut self, renderer: omsi_render::Renderer, mut scene: Scene, title: &str, caption: &str, progress: f32) {
+    /// going to the server): `title` over a bar at `shown` (0..1).
+    fn loading_frame(&mut self, renderer: omsi_render::Renderer, mut scene: Scene, title: &str, shown: f32) {
         let mut reconfigure = false;
         if let (Some(ui), Some(s), Some(win)) = (
             self.ui.as_mut(),
@@ -785,16 +826,7 @@ impl App {
             scene.overlays.clear();
             let dpi = win.scale_factor() as f32;
             let scale = dpi * crate::ui::size_factor(s.config.height as f32, dpi, self.settings.ui_scale, self.settings.ui_scale_window);
-            ui.loading(
-                &renderer,
-                &mut scene,
-                s.config.width as f32,
-                s.config.height as f32,
-                scale,
-                title,
-                caption,
-                progress,
-            );
+            ui.loading(&renderer, &mut scene, s.config.width as f32, s.config.height as f32, scale, title, shown, self.menus.loading.clock(), self.menus.loading.tip());
             let acquired = s.acquire();
             // a swapchain that no longer fits the window (Vulkan says so after the switch
             // to full screen, without a resize event) is made again, as the game's own
@@ -828,6 +860,17 @@ impl App {
                     &blank,
                     &lighting,
                 );
+                // `shot <file>` of an input script, while the loading screen stands
+                if let Some((path, _)) = self.perf.shot.take() {
+                    let path = path.to_string_lossy().into_owned();
+                    match renderer.render_to_image(&mut scene, s.config.width, s.config.height, &blank, &lighting) {
+                        Ok(px) => match image::save_buffer(path.trim(), &px, s.config.width, s.config.height, image::ColorType::Rgba8) {
+                            Ok(()) => log::info!("input script: loading screen written to {}", path.trim()),
+                            Err(e) => log::warn!("input script: {} could not be written: {e}", path.trim()),
+                        },
+                        Err(e) => log::warn!("input script: the loading screen could not be rendered: {e}"),
+                    }
+                }
                 win.pre_present_notify();
                 s.present(&renderer.device, &renderer.queue, frame);
                 self.renderer = Some(renderer);
@@ -847,71 +890,6 @@ impl App {
         self.scene = Some(scene);
     }
 
-    /// Stream the tiles around the camera and the player's bus (whose ground must stay when
-    /// the free camera flies off); when the loaded set changed, hand the new data to whatever
-    /// keeps its own copy (the bus's obstacles, the traffic network, the navigator, the
-    /// street lamps).
-    pub(crate) fn drive_streaming(&mut self) {
-        let mut centers: Vec<DVec3> = self.camera.iter().map(|c| c.position).collect();
-        centers.extend(self.player.iter().map(|p| p.vehicle.position));
-        // a LAN host simulates the world around every player: the ground and the roads there
-        if self.net.lan.as_ref().map(|l| l.role == omsi_net::Role::Host).unwrap_or(false) {
-            centers.extend(self.net.remotes.remotes.values().map(|r| r.vehicle().position));
-        }
-        let (Some(streamer), Some(w), Some(r), Some(scene)) = (
-            self.gfx.streamer.as_mut(),
-            self.world.as_ref(),
-            self.renderer.as_ref(),
-            self.scene.as_mut(),
-        ) else {
-            return;
-        };
-        // textures uploaded as RGBA to spare a frame, compressed on the workers since, and the
-        // texture budget
-        w.apply_texture_upgrades(
-            r,
-            scene,
-            Some(Instant::now() + std::time::Duration::from_millis(2)),
-        );
-        w.update_texture_budget(r, scene, &centers, false);
-        if centers.is_empty() {
-            return;
-        }
-        let changed = streamer.update(
-            r,
-            scene,
-            &centers,
-            std::time::Duration::from_millis(6),
-            self.sound.audio.as_ref(),
-        );
-        // Uploads can temporarily exceed the texture budget before the next frame's
-        // housekeeping pass. Recheck immediately after streaming so far textures are
-        // reduced before the renderer allocates more frame resources.
-        if !changed {
-            return;
-        }
-        w.update_texture_budget(r, scene, &centers, true);
-        if let Some(p) = self.player.as_mut() {
-            // (OMSI's [no_collision]: no solid object stops the bus)
-            p.vehicle.collision = self.settings.collision_objects.then(|| w.collision.lock().clone());
-            p.vehicle.wheel_walls = self.settings.collision_objects;
-        }
-        match self.session.traffic.as_mut() {
-            Some(t) => {
-                t.add_tiles(w);
-            }
-            None => {
-                // no traffic system: the navigator keeps the roads for its map
-                let lanes = std::mem::take(&mut *w.lanes.lock());
-                if let Some(n) = self.menus.navigator.as_mut() {
-                    n.add_lanes(lanes);
-                }
-            }
-        }
-        if let Some(on) = self.session.lamps_on {
-            w.set_lamps(r, scene, on);
-        }
-    }
 }
 
 /// Where a streamed map loads around while it starts: the vehicle's spawn point (a bus must
@@ -1045,4 +1023,73 @@ impl CamCarry {
     }
 }
 
+crate::app::stage_ctx!(
+    /// The streaming stage's part of the game.
+    StreamingCx { reads: [view, net, sound, weather, world], writes: [gfx, player, traffic, menus] }
+);
 
+/// Stream the tiles around the camera and the player's bus (whose ground must stay when
+/// the free camera flies off); when the loaded set changed, hand the new data to whatever
+/// keeps its own copy (the bus's obstacles, the traffic network, the navigator, the
+/// street lamps).
+pub(crate) fn streaming(cx: StreamingCx) {
+    let mut centers: Vec<DVec3> = cx.view.camera.iter().map(|c| c.position).collect();
+    centers.extend(cx.player.player.iter().map(|p| p.vehicle.position));
+    // a LAN host simulates the world around every player: the ground and the roads there
+    if cx.net.lan.as_ref().map(|l| l.role == omsi_net::Role::Host).unwrap_or(false) {
+        centers.extend(cx.net.remotes.remotes.values().map(|r| r.vehicle().position));
+    }
+    let (Some(streamer), Some(w), Some(r), Some(scene)) = (
+        cx.gfx.gfx.streamer.as_mut(),
+        cx.world.world.as_ref(),
+        cx.gfx.renderer.as_ref(),
+        cx.gfx.scene.as_mut(),
+    ) else {
+        return;
+    };
+    // textures uploaded as RGBA to spare a frame, compressed on the workers since, and the
+    // texture budget
+    w.apply_texture_upgrades(
+        r,
+        scene,
+        Some(Instant::now() + std::time::Duration::from_millis(2)),
+    );
+    w.update_texture_budget(r, scene, &centers, false);
+    if centers.is_empty() {
+        return;
+    }
+    let changed = streamer.update(
+        r,
+        scene,
+        &centers,
+        std::time::Duration::from_millis(6),
+        cx.sound.audio.as_ref(),
+    );
+    // Uploads can temporarily exceed the texture budget before the next frame's
+    // housekeeping pass. Recheck immediately after streaming so far textures are
+    // reduced before the renderer allocates more frame resources (only when over it).
+    if !changed {
+        return;
+    }
+    w.texture_budget_after_streaming(r, scene, &centers);
+    if let Some(p) = cx.player.player.as_mut() {
+        // (OMSI's [no_collision]: no solid object stops the bus)
+        p.vehicle.collision = cx.common.settings.collision_objects.then(|| w.data.peek().lists.collision.clone());
+        p.vehicle.wheel_walls = cx.common.settings.collision_objects;
+    }
+    match cx.traffic.traffic.as_mut() {
+        Some(t) => {
+            t.add_tiles(&w.traffic_inbox);
+        }
+        None => {
+            // no traffic system: the navigator keeps the roads for its map
+            let lanes = omsi_sim::world_data::TrafficArrivals::gather(w.traffic_inbox.take()).lanes;
+            if let Some(n) = cx.menus.menus.navigator.as_mut() {
+                n.add_lanes(lanes);
+            }
+        }
+    }
+    if let Some(on) = *cx.weather.lamps_on {
+        w.set_lamps(r, scene, on);
+    }
+}

@@ -6,22 +6,8 @@ use super::*;
 pub(crate) use crate::app_impl::{cab_look_yaw, chase_orbit_step, ease_look, gate_gear_var, look_key_is, look_key_of, on_server, reset_blend, swap_view_look};
 
 
-/// Global actions a controller button should send to the game instead of to the bus script.
-pub(crate) fn is_game_action(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    name.starts_with("view_")
-        || matches!(
-            name.as_str(),
-            "sim_pause"
-                | "open_menu"
-                | "screenshot"
-                | "photo_mode"
-                | "quicksave"
-                | "toggel_mouse_ctrl"
-                | "toggel_ctrler"
-                | "voice_radio"
-        )
-}
+// (the game's own action names live with the controllers: `omsi-input`)
+pub(crate) use omsi_input::actions::is_game_action;
 
 /// How far (m) a click reaches a scenery object with a `[mouseevent]`.
 pub(crate) const SCENERY_OBJECT_REACH: f32 = 50.0;
@@ -56,7 +42,7 @@ impl App {
                 return;
             }
             // and gives the mouse back to the bus when the plugins' panels have it
-            if self.release_plugin_focus() {
+            if self.integrations.release_plugin_focus() {
                 return;
             }
             // and closes the game's panel on top (the quick menu, a form, the editor)
@@ -292,7 +278,7 @@ impl App {
                     .find(|b| b.scan_code == scan && b.matches(chord) && b.action.to_ascii_lowercase().starts_with("chat_"))
                     .map(|b| b.action.clone()))
             };
-            if lan::chat_key(l, &mut self.net.remotes, code, pressed, repeat, bound.as_deref()) {
+            if lan::chat_key(l, &mut self.net.remotes, crate::app_impl::lan_tick::chat_key_of(code), pressed, repeat, bound.as_deref()) {
                 return true;
             }
         }
@@ -413,7 +399,7 @@ impl App {
         if pressed && !repeat {
             match code {
                 // OMSI's `toggel_mouse_ctrl` (O): steering and pedals with the mouse
-                KeyCode::KeyO if !ctrl && !alt && !shift_now && self.key_left_free(code, "toggel_mouse_ctrl") => {
+                KeyCode::KeyO if !ctrl && !alt && !shift_now && self.input.key_left_free(code, "toggel_mouse_ctrl") => {
                     self.game_action("toggel_mouse_ctrl");
                     return true;
                 }
@@ -539,10 +525,10 @@ impl App {
             // (F1-F4 where keyboard.cfg has no view keys; a key the player gave to
             // something else, or a view key moved elsewhere, leaves them alone, #701)
             match code {
-                KeyCode::F1 if self.key_left_free(code, "view_set_driver") => self.view = "driver".into(),
-                KeyCode::F2 if self.key_left_free(code, "view_set_passenger") => self.view = "pax".into(),
-                KeyCode::F3 if self.key_left_free(code, "view_set_outside") => self.view = "outside".into(),
-                KeyCode::F4 if self.key_left_free(code, "view_set_map") => {
+                KeyCode::F1 if self.input.key_left_free(code, "view_set_driver") => self.view = "driver".into(),
+                KeyCode::F2 if self.input.key_left_free(code, "view_set_passenger") => self.view = "pax".into(),
+                KeyCode::F3 if self.input.key_left_free(code, "view_set_outside") => self.view = "outside".into(),
+                KeyCode::F4 if self.input.key_left_free(code, "view_set_map") => {
                     // the free camera starts where the current view is looking
                     self.view = "free".into();
                     self.cam.ego = false;
@@ -703,13 +689,6 @@ impl App {
         }
     }
 
-    /// Whether a key the game gives `action` by itself (F1 the driver's view, O the mouse
-    /// steering) is still free for it: neither bound by the player to something of their
-    /// own nor `action` bound to another key in keyboard.cfg.
-    pub(crate) fn key_left_free(&self, code: KeyCode, action: &str) -> bool {
-        key_left_free(keys::dik_code(code), action, &self.input.own_keys, &self.input.game_keys)
-    }
-
     /// A key of the input script by name: a letter, a digit, F1..F12, or one of the named keys.
     pub(crate) fn script_key(name: &str) -> Option<KeyCode> {
         use KeyCode::*;
@@ -760,7 +739,7 @@ impl App {
     /// right-button drag does, the free and outside cameras too), `set name=value` (a script
     /// variable), `trigger name`, `log name` (with what the HUD says about the cursor),
     /// `dumptex <folder>` (the display pictures), `shot <file>` (the window's picture as a
-    /// PNG) and `type <text>` (into the LAN chat line that `key V` opened; `key Enter`
+    /// PNG), `notify <id> <seconds> <kind> <text>` (a notification card) and `type <text>` (into the LAN chat line that `key V` opened; `key Enter`
     /// sends it).
     pub(crate) fn run_input_script(&mut self, event_loop: &ActiveEventLoop) {
         if self.perf.input_script.is_empty() {
@@ -965,6 +944,10 @@ impl App {
                     }
                 }
                 // `log pose`: where the bus and the camera are, and whether the bus has ground
+                "log" if arg == "clock" => {
+                    let t = self.clock.time;
+                    log::info!("input script: clock {:02}:{:02}:{:02} (day {}, sync {})", (t / 3600.0) as u32, (t / 60.0) as u32 % 60, t as u32 % 60, self.clock.day_of_year, self.real_time_locked());
+                }
                 "log" if arg == "pose" => {
                     let bus = self.player.as_ref().map(|p| {
                         (
@@ -1051,6 +1034,12 @@ impl App {
                 // `shot <file>`: the window's own view into a PNG, drawn from the scene the
                 // window is showing (the only way to see what the window path renders)
                 "shot" => self.perf.shot = Some((PathBuf::from(arg), true)),
+                // `notify <id> <seconds> <kind> <text>`: a notification, as the server's
+                // `notify` sends one (to look at the cards)
+                "notify" => match cmd.split_once(' ').and_then(|(_, rest)| crate::ui::Notice::parse(rest)) {
+                    Some((_, n)) => crate::ui::push_notice(&mut self.menus.notices, n),
+                    None => log::warn!("input script: notify <id> <seconds> <info|warn|alert|action|success> <text>"),
+                },
                 // `dumptex <folder>`: the player's display pictures as the window has them
                 "dumptex" => {
                     if let Some(p) = self.player.as_ref() {
@@ -1284,5 +1273,14 @@ mod key_tests {
         assert!(!super::key_left_free(Some(59), "view_set_driver", &own, &[]));
         assert!(!super::key_left_free(Some(59), "view_set_driver", &none, &[kb("view_set_driver", 2)]));
         assert!(super::key_left_free(Some(59), "view_set_driver", &none, &[kb("view_set_passenger", 60)]));
+    }
+}
+
+impl InputState {
+    /// Whether a key the game gives `action` by itself (F1 the driver's view, O the mouse
+    /// steering) is still free for it: neither bound by the player to something of their
+    /// own nor `action` bound to another key in keyboard.cfg.
+    pub(crate) fn key_left_free(&self, code: KeyCode, action: &str) -> bool {
+        key_left_free(keys::dik_code(code), action, &self.own_keys, &self.game_keys)
     }
 }

@@ -9,13 +9,7 @@ impl App {
     /// view left is put away and the one of the view entered comes back (straight ahead
     /// the first time).
     pub(crate) fn sync_view_look(&mut self) {
-        let key = self.look_key();
-        // A change of view is not a turn of the head: the direction of the view entered is
-        // where the head already is, so the angle the camera is drawn at starts there as
-        // well (a glide belongs between angles of one and the same view).
-        if swap_view_look(&mut self.cam.look, &mut self.cam.view_looks, &mut self.cam.look_view, &key) {
-            self.cam.look_smooth = self.cam.look;
-        }
+        sync_view_look(&mut self.cam, &self.view, self.player.as_ref());
     }
 
     /// Which camera the look belongs to: the view, and for the driver's and the passengers'
@@ -28,28 +22,7 @@ impl App {
 
     /// Zoom the view inside the bus by `notches` of the mouse wheel (in: positive).
     pub(crate) fn zoom_by(&mut self, notches: f32) {
-        // a hand on the zoom cancels an eased Space return.
-        self.cam.f1_reset = None;
-        let z = self.cam.view_zoom.entry(self.view.clone()).or_insert(1.0);
-        *z = (*z * (1.0 - 0.08 * notches.clamp(-5.0, 5.0))).clamp(0.2, 1.6);
-    }
-
-    /// `OMSI_TRACE_LOOK=<csv>`: one line (`what` = frame, cursor, ...) with the cursor, the
-    /// head's turn and the camera drawn last.
-    pub(crate) fn trace_look(&self, what: &str, x: f32, y: f32) {
-        let Some(path) = omsi_cfg::flags::OMSI_TRACE_LOOK.var() else { return };
-        use std::io::Write;
-        static FILE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
-        let mut g = FILE.lock().unwrap_or_else(|e| e.into_inner());
-        if g.is_none() {
-            *g = std::fs::File::create(path).ok();
-            if let Some(f) = g.as_mut() {
-                let _ = writeln!(f, "t,what,x,y,look_yaw,look_pitch,cam_yaw,cam_pitch,mouse_look,grab");
-            }
-        }
-        if let (Some(f), Some(c)) = (g.as_mut(), self.camera.as_ref()) {
-            let _ = writeln!(f, "{:.4},{what},{x:.1},{y:.1},{:.3},{:.3},{:.3},{:.3},{},{:?}", self.started.elapsed().as_secs_f64(), self.cam.look.0, self.cam.look.1, c.yaw, c.pitch, self.input.mouse_look as u8, self.input.mouse_grab.mode);
-        }
+        zoom_view(&mut self.cam, &self.view, notches);
     }
 
     pub(crate) fn look_by(&mut self, dx: f32, dy: f32) {
@@ -184,6 +157,27 @@ pub(crate) fn look_key_is(key: &str, view: &str, cam: Option<(usize, usize)>) ->
     }
 }
 
+/// [`App::zoom_by`] on the view's state `cam` and the view `view`.
+pub(crate) fn zoom_view(cam: &mut ViewState, view: &str, notches: f32) {
+    // a hand on the zoom cancels an eased Space return.
+    cam.f1_reset = None;
+    let z = cam.view_zoom.entry(view.to_string()).or_insert(1.0);
+    *z = (*z * (1.0 - 0.08 * notches.clamp(-5.0, 5.0))).clamp(0.2, 1.6);
+}
+
+/// [`App::sync_view_look`] on the view's state `cam`, the view `view` and the bus driven.
+pub(crate) fn sync_view_look(cam: &mut ViewState, view: &str, player: Option<&Player>) {
+    let key = look_key_of(view, player.map(|p| p.cam_choice));
+    let left = cam.look_view.clone();
+    // A change of view is not a turn of the head: the direction of the view entered is
+    // where the head already is, so the angle the camera is drawn at starts there as
+    // well (a glide belongs between angles of one and the same view).
+    if swap_view_look(&mut cam.look, &mut cam.view_looks, &mut cam.look_view, &key) {
+        cam.look_smooth = cam.look;
+        swap_cam_zoom(&mut cam.view_zoom, &mut cam.cam_zooms, &left, &key, view);
+    }
+}
+
 pub(crate) fn look_key_of(view: &str, cam: Option<(usize, usize)>) -> String {
     match (view, cam) {
         ("driver", Some((d, _))) => format!("driver#{d}"),
@@ -199,6 +193,29 @@ pub(crate) fn look_key_of(view: &str, cam: Option<(usize, usize)>) -> String {
 /// swings the short way back.
 pub(crate) fn cab_look_yaw(yaw: f32) -> f32 {
     (yaw + 180.0).rem_euclid(360.0) - 180.0
+}
+
+/// The zoom of a camera changed to (`left` -> `key`, look keys): the camera left keeps its
+/// own, the one taken gets its own back. It was one zoom for every camera of a view (#2183).
+pub(crate) fn swap_cam_zoom(
+    view_zoom: &mut std::collections::HashMap<String, f32>,
+    cam_zooms: &mut std::collections::HashMap<String, f32>,
+    left: &str,
+    key: &str,
+    view: &str,
+) {
+    if let Some((left_view, _)) = left.split_once('#') {
+        match view_zoom.get(left_view).copied() {
+            Some(z) => cam_zooms.insert(left.to_string(), z),
+            None => cam_zooms.remove(left),
+        };
+    }
+    if key.contains('#') {
+        match cam_zooms.get(key).copied() {
+            Some(z) => view_zoom.insert(view.to_string(), z),
+            None => view_zoom.remove(view),
+        };
+    }
 }
 
 /// Put the direction of the view left away and take up the one of the view entered; `true`
@@ -332,5 +349,24 @@ mod look_key_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod zoom_tests {
+    use super::swap_cam_zoom;
+    use std::collections::HashMap;
+
+    /// Each cab camera keeps its zoom: zoomed in the right-hand view, the front view taken
+    /// again comes back unzoomed, and the right-hand one zoomed (#2183).
+    #[test]
+    fn each_cab_camera_keeps_its_zoom() {
+        let (mut zoom, mut kept) = (HashMap::new(), HashMap::new());
+        swap_cam_zoom(&mut zoom, &mut kept, "driver#0", "driver#1", "driver");
+        zoom.insert("driver".to_string(), 0.5);
+        swap_cam_zoom(&mut zoom, &mut kept, "driver#1", "driver#0", "driver");
+        assert_eq!(zoom.get("driver"), None);
+        swap_cam_zoom(&mut zoom, &mut kept, "driver#0", "driver#1", "driver");
+        assert_eq!(zoom.get("driver"), Some(&0.5));
     }
 }

@@ -215,6 +215,19 @@ pub(crate) struct Args {
     /// shortly before the bus has to set off (what the HUD says at the start).
     #[arg(skip)]
     pub(crate) clock_moved: Option<String>,
+    /// The game starts at this device's date and time (`real_time::start_at_now`): a duty
+    /// must not move the clock then. (A field, not a global: a second drive in the same
+    /// process - Android's launcher - starts from its own arguments.)
+    #[arg(skip)]
+    pub(crate) start_synced: bool,
+    /// The world the duty start opened, for the session to go on with (see
+    /// `duty_start::Preopened`).
+    #[arg(skip)]
+    pub(crate) preopened: crate::duty_start::Preopened,
+    /// The look the settings and arguments ask for (see `startup::SessionSettings`), worked out at the
+    /// session's start.
+    #[arg(skip)]
+    pub(crate) session_settings: crate::startup::SessionSettings,
     /// With a duty: start at the entry point nearest to its first stop by road (the
     /// launcher's "Automatic") instead of `--entry`.
     #[arg(long)]
@@ -263,9 +276,6 @@ pub(crate) struct Args {
     /// can trace rays).
     #[arg(long)]
     pub(crate) enhanced_plus: bool,
-    /// Open the launcher (the default when the program is started without arguments).
-    #[arg(long)]
-    pub(crate) launcher: bool,
     /// Skip the launcher and show the in-game start menu instead.
     #[arg(long)]
     pub(crate) menu: bool,
@@ -276,11 +286,7 @@ pub(crate) struct Args {
 }
 
 pub(crate) fn parse_time(s: &str) -> f64 {
-    let mut it = s.split(':');
-    let h: f64 = it.next().and_then(|x| x.trim().parse().ok()).unwrap_or(9.0);
-    let m: f64 = it.next().and_then(|x| x.trim().parse().ok()).unwrap_or(0.0);
-    let sec: f64 = it.next().and_then(|x| x.trim().parse().ok()).unwrap_or(0.0);
-    h * 3600.0 + m * 60.0 + sec
+    omsi_sim::clock::parse_day_time(s)
 }
 
 pub(crate) fn parse_cam(s: &str) -> Result<Camera> {

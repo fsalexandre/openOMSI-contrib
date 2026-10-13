@@ -11,7 +11,12 @@ mod picture;
 mod record;
 mod report;
 mod setup;
+mod stages;
 mod step;
+
+pub(crate) use stages::OFFSCREEN_STEP;
+#[cfg(test)]
+pub(crate) use stages::OffscreenStage;
 
 /// What an offscreen run keeps from its start to its picture (the names are the run's
 /// locals when it was one function).
@@ -25,6 +30,8 @@ struct Offscreen<'a> {
     renderer: Renderer,
     scene: Scene,
     world: World,
+    /// the scenery objects' scripts (see `World::scenery_sync`)
+    scenery: omsi_sim::scenery::SceneryState,
     camera: Camera,
     traffic: Option<traffic::Traffic>,
     schedule: Option<schedule::Schedule>,
@@ -60,6 +67,7 @@ struct Offscreen<'a> {
     lan_audio: Option<omsi_audio::AudioEngine>,
     lan_off: Option<omsi_net::LanSession>,
     remotes_off: lan::LanGame,
+    lan_world_off: crate::lan_world::LanWorld,
     /// the clock of the moment the run has reached (the start, the workshop's wait and the
     /// seconds run; a dedicated server's own), as the window's goes on
     run_clock: omsi_sim::SimClock,
@@ -80,6 +88,13 @@ struct Offscreen<'a> {
     real_time: RealTime,
     /// `OMSI_RECORD`: the film being written (see `record`).
     recorder: Option<record::Recorder>,
+    /// What each stage of the steps took in all (s, see `frame_stages`; logged with
+    /// OMSI_PROFILE).
+    profile: crate::profile_keys::ProfileTimes,
+    /// The worst the bus did on the way, for the drive report.
+    drive_extremes: DriveExtremes,
+    /// The sky's cloud type and the physical weather model (see `weather_setup::SkyState`).
+    sky: crate::weather_setup::SkyState,
 }
 
 pub(crate) fn run_offscreen(
@@ -88,17 +103,31 @@ pub(crate) fn run_offscreen(
     lan_off: Option<omsi_net::LanSession>,
     remotes_off: lan::LanGame,
 ) -> Result<()> {
+    crate::frame_stages::log_order();
     let mut run = Offscreen::setup(args, out, lan_off, remotes_off)?;
+    let mut steps = 0;
     for i in 0..run.total_frames {
+        steps += 1;
         if !run.step(i)? {
             break;
         }
     }
     run.finish_recording()?;
+    run.log_profile(steps);
     run.finish()
 }
 
 impl Offscreen<'_> {
+    /// OMSI_PROFILE: what each stage took per step, on average.
+    fn log_profile(&self, steps: usize) {
+        if !omsi_cfg::flags::OMSI_PROFILE.is_set() {
+            return;
+        }
+        let steps = steps.max(1) as f64;
+        let list: Vec<String> = self.profile.iter().map(|(k, v)| format!("{k} {:.2}", v / steps * 1000.0)).collect();
+        log::info!("profile: offscreen stages per step (ms): {}", list.join(", "));
+    }
+
     /// After the steps: the run's reports, the checks asked for, the picture.
     fn finish(mut self) -> Result<()> {
         let args = self.args;
@@ -172,6 +201,7 @@ fn pose_player(p: &mut Player, renderer: &Renderer, scene: &mut Scene, args: &Ar
         renderer,
         scene,
         matches!(args.view.as_str(), "driver" | "pax"),
+        crate::rain::quality_of(&settings.rain_quality),
     );
     crate::scene::sync_vehicle_damage(renderer, scene, &mut p.vehicle, &mut p.render);
     p.sync_driver(renderer, scene, 1.0 / 30.0, settings.driver, args.view == "driver");
@@ -188,12 +218,23 @@ fn world_lights(
     eye: DVec3,
     vehicles: &[&omsi_sim::VehicleInstance],
 ) {
-    lights::set_cone_strength(weather.fog.0, precip_of(weather).1, daylight.night);
     lights::upload_corona_textures(renderer);
     world.update_light_map_atlas(renderer, eye);
-    lights::collect(world, scene, daylight, eye, vehicles);
+    lights::collect(world, scene, daylight, eye, vehicles, lights::ConeWeather::new(weather.fog.0, daylight.night));
     // (and the pictures the lights asked for first now: a picture has the one frame)
     lights::upload_corona_textures(renderer);
+}
+
+/// The run's step: a tick of the simulation's fixed step (`omsi_sim::tick::RATE_HZ`), as
+/// the window's.
+fn run_dt() -> f32 {
+    (1.0 / omsi_sim::tick::RATE_HZ) as f32
+}
+
+/// The run's steps in `secs` seconds (at least one): what happens every second happens every
+/// second.
+fn steps_in(secs: f64) -> usize {
+    (secs * omsi_sim::tick::RATE_HZ).round().max(1.0) as usize
 }
 
 /// The offscreen loop's fixed steps kept to the clock when other games take part (a LAN
@@ -250,8 +291,11 @@ fn tyre_lows(v: &omsi_sim::VehicleInstance, world: &World) -> Vec<(DVec3, f64)> 
 }
 
 /// The worst pitch and bank of the drive, the origin's highest and lowest over the ground,
-/// and where and when the worst pitch was.
-static DRIVE_EXTREMES: parking_lot::Mutex<(f32, f32, f64, f64, (DVec3, f32))> = parking_lot::Mutex::new((0.0, 0.0, f64::MIN, f64::MAX, (DVec3::ZERO, 0.0)));
+/// and where and when the worst pitch was (`Offscreen::drive_extremes`).
+type DriveExtremes = (f32, f32, f64, f64, (DVec3, f32));
+
+/// Nothing driven yet.
+const NO_EXTREMES: DriveExtremes = (0.0, 0.0, f64::MIN, f64::MAX, (DVec3::ZERO, 0.0));
 
 /// `OMSI_CAM_VEHICLE=x,y,z,yaw,pitch[,fov]`: a camera in the bus's own frame (x right,
 /// y forward, z up; yaw relative to the bus) for close-ups of displays and switches - the

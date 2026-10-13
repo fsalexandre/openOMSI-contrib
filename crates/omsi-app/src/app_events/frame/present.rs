@@ -3,31 +3,37 @@
 
 use super::*;
 
-impl App {
-    /// The lighting the frame is drawn with.
-    pub(super) fn frame_lighting(&mut self, dt: f32, daylight: omsi_sim::Daylight) -> omsi_render::Lighting {
-        if let Some(w) = self.session.weather.as_ref() {
-            self.session.wetness = road_wetness(precip_of(w).1, dt as f64, self.session.wetness);
-        }
-        let inside = match self.net.inside_remote.and_then(|id| self.net.remotes.remotes.get(&id)) {
-            // (in another player's bus: its box is the one the camera is in)
-            Some(rv) => Some(rv.vehicle()),
-            None => self.player.as_ref().map(|p| &p.vehicle),
-        };
-        steps::picture_lighting(
-            &daylight,
-            self.session.weather.as_ref(),
-            self.session.cloud_drift,
-            self.session.wetness,
-            self.world.as_deref(),
-            inside,
-            self.player.as_ref().map(|p| &p.vehicle),
-            self.session.cabin_air.appearance(),
-            &self.settings,
-            self.clock.run_time as f32,
-        )
-    }
+crate::app::stage_ctx!(
+    /// The lighting stage's part of the game.
+    LightingCx { reads: [net, world, clock], writes: [weather, player] }
+);
 
+/// The lighting the frame is drawn with.
+pub(super) fn lighting(cx: LightingCx, dt: f32, daylight: omsi_sim::Daylight) -> omsi_render::Lighting {
+    if let Some(w) = cx.weather.weather.as_ref() {
+        *cx.weather.wetness = road_wetness(precip_of(w).1, dt as f64, *cx.weather.wetness);
+    }
+    let inside = match cx.net.inside_remote.and_then(|id| cx.net.remotes.remotes.get(&id)) {
+        // (in another player's bus: its box is the one the camera is in)
+        Some(rv) => Some(rv.vehicle()),
+        None => cx.player.player.as_ref().map(|p| &p.vehicle),
+    };
+    steps::picture_lighting(
+        &daylight,
+        cx.weather.weather.as_ref(),
+        *cx.weather.cloud_drift,
+        *cx.weather.wetness,
+        cx.world.world.as_deref(),
+        inside,
+        cx.player.player.as_ref().map(|p| &p.vehicle),
+        cx.weather.cabin_air.appearance(),
+        cx.common.settings,
+        cx.clock.clock.run_time as f32,
+        &*cx.weather.sky,
+    )
+}
+
+impl App {
     /// The frame drawn and shown (or, with the window hidden, the simulation kept at a
     /// display's pace), the frame rate limited, the session's statistics.
     pub(super) fn frame_render(
@@ -62,11 +68,15 @@ impl App {
                 self.photo_render(lighting);
             }
             let (frame, view, shown_nothing) = self.frame_acquire(&mut reconfigure);
+            let presented = frame.is_some();
             match view {
                 Some(view) => self.frame_draw(time.raw_dt, lighting, vr_nav_display, frame, view),
                 None => self.frame_hidden(time.now),
             }
-            self.frame_pace(time.now, shown_nothing);
+            self.frame_pace(time.now, shown_nothing, presented);
+            // (what the sim thread stepped meanwhile is back before the frame is counted or
+            // the session finished, see `sim_thread`)
+            self.join_sim_thread();
             finish = self.frame_count(event_loop);
             if let Some(win) = self.window.as_ref() {
                 win.request_redraw();
@@ -104,7 +114,7 @@ impl App {
         // so it does not depend on a frame being acquired)
         let (path, include_touch) = shot;
         // the photo mode: its developed photo (stretched to the window) under its panel
-        let developed = self.photo.as_ref().filter(|ph| ph.render.showing_photo()).and_then(|ph| ph.developed()).map(|(w, h, px)| crate::photo::stretch(w, h, px, s.config.width, s.config.height));
+        let developed = self.photo.as_ref().filter(|ph| ph.render.showing_photo()).and_then(|ph| ph.shown()).map(|(w, h, px)| crate::photo::stretch(w, h, px, s.config.width, s.config.height));
         match developed.map(Ok).unwrap_or_else(|| r.render_to_image(
             scene,
             s.config.width,
@@ -217,7 +227,7 @@ impl App {
             }
             _ => (None, None),
         };
-        *self.perf.profile.entry("acquire").or_default() += __t.elapsed().as_secs_f64();
+        self.perf.profile.add(crate::profile_keys::ProfKey::Acquire, __t.elapsed().as_secs_f64());
         if frame.is_none() {
             self.gfx.hidden_frames += 1;
         }
@@ -329,12 +339,12 @@ impl App {
         self.shell.render(r, &view, s.config.width, s.config.height);
         // the on-screen controls over the picture (a phone)
         self.input.touch.render(r, &view, s.config.width, s.config.height);
-        *self.perf.profile.entry("render").or_default() += __t.elapsed().as_secs_f64();
+        self.perf.profile.add(crate::profile_keys::ProfKey::Render, __t.elapsed().as_secs_f64());
         if omsi_cfg::flags::OMSI_PROFILE_GPU.is_set() {
             // wait for the GPU here, so that its time shows as a stage of its own
             let __t = Instant::now();
             let _ = omsi_render::wait_gpu(&r.device, None);
-            *self.perf.profile.entry("gpu").or_default() += __t.elapsed().as_secs_f64();
+            self.perf.profile.add(crate::profile_keys::ProfKey::Gpu, __t.elapsed().as_secs_f64());
         }
         let __t = Instant::now();
         match frame {
@@ -349,7 +359,7 @@ impl App {
                 let _ = omsi_render::wait_gpu(&r.device, None);
             }
         }
-        *self.perf.profile.entry("present").or_default() += __t.elapsed().as_secs_f64();
+        self.perf.profile.add(crate::profile_keys::ProfKey::Present, __t.elapsed().as_secs_f64());
     }
 
     /// The bus's mirrors redrawn, in turn, within their budget.
@@ -374,9 +384,46 @@ impl App {
         if let (Some(p), Some(w)) = (self.player.as_ref(), self.world.as_ref()) {
             steps::mirror_hud_sync(&mut self.gfx.mirror_hud, w, p, self.settings.mirror_hud);
         }
+        r.options.mirror_enhanced = self.settings.mirror_quality == "enhanced";
+        #[cfg(windows)]
+        let vr_active = self.xr.vr.is_some();
+        #[cfg(not(windows))]
+        let vr_active = false;
+        // With `mirror_hud_every_frame` the mirror panels in the cab (Ctrl+M) are drawn every
+        // frame, whatever the refresh setting, seen in the glass or not: a driving aid on the
+        // screen, not a small picture far off. The other mirrors take their turns below without
+        // them. (In VR the panels are not drawn.)
+        let mut panel_cams = std::mem::take(&mut self.gfx.mirror_panel_cams);
+        if self.settings.mirror_hud_every_frame && self.settings.mirror_size != 0 && !vr_active && self.cam.in_cab && self.gfx.mirror_hud.active() {
+            self.gfx.mirror_hud.cams_into(&mut panel_cams);
+        } else {
+            panel_cams.clear();
+        }
+        if !panel_cams.is_empty() {
+            if let (Some(w), Some(p)) = (self.world.as_ref(), self.player.as_ref()) {
+                let view = (*cam, s.config.width as f32 / s.config.height.max(1) as f32);
+                render_mirrors(r, scene, w, p, lighting, MirrorPick::Only(&panel_cams), Some(view));
+            }
+        }
         if self.settings.mirror_size == 0 {
             self.gfx.mirror_budget = 0.0;
             self.gfx.mirrors_seen = 0;
+        } else if self.settings.mirror_refresh == "every" && !vr_active {
+            // every mirror in the picture every frame: the street goes by in them as smoothly
+            // as through the windscreen (in turns, each picture was a step behind, and the
+            // steps grew with the speed - the mirrors seemed to shake)
+            self.gfx.mirror_budget = 0.0;
+            let mirror_view = if self.settings.triple.enabled || (self.gfx.mirror_hud.active() && self.cam.in_cab && panel_cams.is_empty()) {
+                None
+            } else {
+                Some((*cam, s.config.width as f32 / s.config.height.max(1) as f32))
+            };
+            let near = self.player.as_ref().is_some_and(|p| (p.vehicle.position - cam.position).length() < 12.0);
+            if let (Some(w), Some(p)) = (self.world.as_ref(), self.player.as_ref()) {
+                if self.cam.in_cab || near {
+                    self.gfx.mirrors_seen = render_mirrors(r, scene, w, p, lighting, MirrorPick::All(&panel_cams), mirror_view);
+                }
+            }
         } else if self.settings.mirror_refresh == "off" {
             self.gfx.mirror_budget = 0.0;
             if let (Some(w), Some(p)) = (self.world.as_ref(), self.player.as_ref()) {
@@ -387,16 +434,12 @@ impl App {
                 let next = since.max(0.0) + raw_dt.min(0.1);
                 // (and while the driver turns a mirror, so it can be aimed)
                 if since < 0.0 || (since < MIRROR_FREEZE_REDRAW && next >= MIRROR_FREEZE_REDRAW) || p.mirrors_dirty {
-                    self.gfx.mirrors_seen = render_mirrors(r, scene, w, p, lighting, None, None);
+                    self.gfx.mirrors_seen = render_mirrors(r, scene, w, p, lighting, MirrorPick::All(&panel_cams), None);
                 }
                 self.gfx.frozen_mirrors = Some(FrozenMirrors { bus: p.uid, since: next });
             }
         } else {
             let mirrors = self.player.as_ref().map(|p| p.vehicle.ty.def.cameras_reflexion.len()).unwrap_or(0);
-            #[cfg(windows)]
-            let vr_active = self.xr.vr.is_some();
-            #[cfg(not(windows))]
-            let vr_active = false;
             let rate = {
                 if vr_active {
                     // Preserve the user's total redraw budget. A negative
@@ -413,9 +456,11 @@ impl App {
             // its frustum can leave a mirror visible in VR uninitialised
             // (black). Refresh all bus mirrors in VR, still taking turns
             // within the configured budget; keep desktop visibility culling.
+            // (Panels taking their turns show mirrors out of the picture: all of them take
+            // turns then. Panels drawn every frame above are left out of the turns instead.)
             let mirror_view = if vr_active
                 || self.settings.triple.enabled
-                || (self.gfx.mirror_hud.active() && self.cam.in_cab)
+                || (self.gfx.mirror_hud.active() && self.cam.in_cab && panel_cams.is_empty())
             {
                 None
             } else {
@@ -432,8 +477,8 @@ impl App {
                     0
                 }
             } else {
-                self.gfx.mirror_budget = (self.gfx.mirror_budget + raw_dt.min(0.1) * rate).min(2.5);
-                self.gfx.mirrors_seen.clamp(1, 2)
+                let min_rate = self.gfx.mirrors_seen.max(1) as f32 * MIRROR_MIN_HZ;
+                mirror_updates(&mut self.gfx.mirror_budget, &mut self.gfx.mirror_dt, raw_dt, rate, min_rate, self.gfx.mirrors_seen.clamp(1, 2))
             };
             let mut drawn = 0;
             if vr_active && draw_limit > 0 && draw_limit == mirrors {
@@ -441,15 +486,12 @@ impl App {
                 // mirrors are due, including the Every frame mode.
                 if let (Some(w), Some(p)) = (self.world.as_ref(), self.player.as_ref()) {
                     self.gfx.mirror_turn = self.gfx.mirror_turn.wrapping_add(draw_limit);
-                    self.gfx.mirrors_seen = render_mirrors(r, scene, w, p, lighting, None, mirror_view);
+                    self.gfx.mirrors_seen = render_mirrors(r, scene, w, p, lighting, MirrorPick::All(&panel_cams), mirror_view);
                     drawn = draw_limit;
                 }
             }
-            while (self.cam.in_cab || near) && drawn < (if vr_active { draw_limit } else { self.gfx.mirrors_seen.clamp(1, 2) }) && (vr_active || self.gfx.mirror_budget >= 1.0) {
+            while (self.cam.in_cab || near) && drawn < draw_limit {
                 let (Some(w), Some(p)) = (self.world.as_ref(), self.player.as_ref()) else { break };
-                if !vr_active {
-                    self.gfx.mirror_budget -= 1.0;
-                }
                 drawn += 1;
                 self.gfx.mirror_turn = self.gfx.mirror_turn.wrapping_add(1);
                 self.gfx.mirrors_seen = render_mirrors(
@@ -458,12 +500,13 @@ impl App {
                     w,
                     p,
                     lighting,
-                    Some(self.gfx.mirror_turn),
+                    MirrorPick::Turn(self.gfx.mirror_turn, &panel_cams),
                     mirror_view,
                 );
             }
         }
-        *self.perf.profile.entry("mirrors").or_default() += __t.elapsed().as_secs_f64();
+        self.gfx.mirror_panel_cams = panel_cams;
+        self.perf.profile.add(crate::profile_keys::ProfKey::Mirrors, __t.elapsed().as_secs_f64());
     }
 
     /// Nothing to draw into: what was uploaded let go, the simulation at a display's pace.
@@ -478,7 +521,7 @@ impl App {
         let __t = Instant::now();
         r.queue.submit(std::iter::empty::<wgpu::CommandBuffer>());
         let _ = r.device.poll(wgpu::PollType::Poll);
-        *self.perf.profile.entry("present").or_default() += __t.elapsed().as_secs_f64();
+        self.perf.profile.add(crate::profile_keys::ProfKey::Present, __t.elapsed().as_secs_f64());
         if let Some(rest) =
             std::time::Duration::from_millis(16).checked_sub(now.elapsed())
         {
@@ -486,13 +529,15 @@ impl App {
         }
     }
 
-    /// The frame rate's limit: the rest of the frame's time slept.
-    fn frame_pace(&mut self, now: Instant, shown_nothing: bool) {
+    /// The frame rate's limit: the rest of the frame's time slept. `presented`: the frame
+    /// went to the window's surface (with V-sync its present already waits for the screen).
+    fn frame_pace(&mut self, now: Instant, shown_nothing: bool, presented: bool) {
         // max_fps (the original's [maxFPS]; OMSI_MAX_FPS for a test): the rest of
         // the frame's time is slept, not spun, so a limit gives the CPU back
         // (and keeps a laptop cool enough not to slow itself down)
         let max_fps = omsi_cfg::flags::OMSI_MAX_FPS.parse::<u32>()
             .unwrap_or(self.settings.max_fps);
+        let asked = max_fps;
         // 0 = the screen's refresh rate: frames the screen never shows only heat the
         // machine (with V-sync off and no limit an M4 drew 300 frames a second in the
         // depot and ran hot); 1000 and more = no limit at all
@@ -522,14 +567,17 @@ impl App {
         let vr_active = self.xr.vr.is_some();
         #[cfg(not(windows))]
         let vr_active = false;
-        if max_fps > 0 && !vr_active {
+        // With V-sync and no limit of the player's own (0 = the screen's rate) the present
+        // already holds the frames to the screen's refresh. Sleeping a refresh from each
+        // frame's start on top of it drifted against the screen's vblank: now and then a
+        // frame slept past one and waited for the next, two refreshes for one frame.
+        let vsync_paces = presented
+            && asked == 0
+            && self.gfx.surface.as_ref().is_some_and(|s| s.config.present_mode == wgpu::PresentMode::AutoVsync);
+        if max_fps > 0 && !vr_active && !vsync_paces {
             let __t = Instant::now();
-            if let Some(rest) = std::time::Duration::from_secs_f64(1.0 / max_fps as f64)
-                .checked_sub(now.elapsed())
-            {
-                std::thread::sleep(rest);
-            }
-            *self.perf.profile.entry("limiter").or_default() += __t.elapsed().as_secs_f64();
+            pace_until(now, std::time::Duration::from_secs_f64(1.0 / max_fps as f64));
+            self.perf.profile.add(crate::profile_keys::ProfKey::Limiter, __t.elapsed().as_secs_f64());
         }
     }
 
@@ -546,6 +594,10 @@ impl App {
         };
         let mut finish = false;
         self.perf.frames += 1;
+        // (a second of play drawn: this session started well, see omsi-guard)
+        if self.perf.frames == 60 {
+            omsi_guard::healthy(omsi_guard::journal::Kind::Game);
+        }
         let profiling = omsi_cfg::flags::OMSI_PROFILE.is_set();
         // (the warm-up: 15 s of play, not of the process - a big map's loading took most of
         // 15 s, and the summary then held the first heavy frames of play; marked whether or not
@@ -635,17 +687,87 @@ impl App {
                 .map(|p| format!(" - {:.0} km/h", p.vehicle.physics.velocity_kmh()))
                 .unwrap_or_default();
             self.perf.fps = self.perf.frames as f32;
-            win.set_title(&format!(
+            let title = format!(
                 "openOMSI - {} fps{speed} - {:.0},{:.0},{:.0} yaw {:.0}",
                 self.perf.frames,
                 cam.position.x,
                 cam.position.y,
                 cam.position.z,
                 cam.yaw.rem_euclid(360.0)
-            ));
+            );
+            // (a new title is a synchronous round trip to the window server: only when it
+            // says something new - standing still at a steady rate it does not)
+            static SHOWN: parking_lot::Mutex<String> = parking_lot::Mutex::new(String::new());
+            let mut shown = SHOWN.lock();
+            if *shown != title {
+                win.set_title(&title);
+                *shown = title;
+            }
             self.perf.frames = 0;
             self.perf.fps_t = Instant::now();
         }
         finish
+    }
+}
+
+/// Waits for the next frame's deadline (see [`next_deadline`]). The last moment is spun,
+/// not slept: a sleep may wake a millisecond late.
+fn pace_until(frame_start: Instant, period: std::time::Duration) {
+    use std::time::Duration;
+    static NEXT: parking_lot::Mutex<Option<(Instant, Duration)>> = parking_lot::Mutex::new(None);
+    let mut next = NEXT.lock();
+    let deadline = next_deadline(*next, frame_start, Instant::now(), period);
+    *next = Some((deadline, period));
+    drop(next);
+    const SPIN: Duration = Duration::from_millis(1);
+    if let Some(rest) = deadline.checked_duration_since(Instant::now()) {
+        if rest > SPIN {
+            std::thread::sleep(rest - SPIN);
+        }
+    }
+    while Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+}
+
+/// When the frame that started at `frame_start` (and ends `now`) gives way to the next, the
+/// last deadline `last` (with its period). The deadlines lie a period apart on one clock
+/// (`next += period`), not a period after each frame's start: a frame's own jitter then
+/// does not shift all the frames after it, and the pace stays even. A little late - a
+/// quarter period - is made up in the next frame; later than that a new count starts from
+/// now: making up a whole frame's delay drew the next frame at once, two frames shown
+/// close together. A new limit starts its count from the frame's start.
+fn next_deadline(last: Option<(Instant, std::time::Duration)>, frame_start: Instant, now: Instant, period: std::time::Duration) -> Instant {
+    match last {
+        Some((at, p)) if p == period => {
+            let at = at + period;
+            if at + period / 4 < now { now } else { at }
+        }
+        _ => frame_start + period,
+    }
+}
+
+#[cfg(test)]
+mod pace_tests {
+    use super::next_deadline;
+    use std::time::{Duration, Instant};
+
+    /// Frames of uneven length keep to deadlines a period apart; a little late is made up,
+    /// a long frame starts the count anew; a new limit starts from the frame's start.
+    #[test]
+    fn deadlines_keep_one_clock() {
+        let ms = |x: u64| Duration::from_millis(x);
+        let (t0, p) = (Instant::now(), ms(10));
+        let d1 = next_deadline(None, t0, t0 + ms(3), p);
+        assert_eq!(d1, t0 + ms(10));
+        // a frame of 7 ms or of 2 ms: the next deadline is still 10 ms on
+        assert_eq!(next_deadline(Some((d1, p)), d1, d1 + ms(7), p), t0 + ms(20));
+        assert_eq!(next_deadline(Some((d1, p)), d1, d1 + ms(2), p), t0 + ms(20));
+        // 2 ms late: kept (the next frame makes it up)
+        assert_eq!(next_deadline(Some((d1, p)), d1, d1 + ms(12), p), t0 + ms(20));
+        // 5 ms late: a new count from now
+        assert_eq!(next_deadline(Some((d1, p)), d1, d1 + ms(15), p), d1 + ms(15));
+        // another limit
+        assert_eq!(next_deadline(Some((d1, p)), d1, d1 + ms(1), ms(20)), d1 + ms(20));
     }
 }

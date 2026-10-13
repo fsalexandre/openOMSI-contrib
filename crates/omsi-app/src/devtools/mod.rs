@@ -27,7 +27,7 @@ use std::time::Instant;
 use glam::Vec2;
 use winit::keyboard::KeyCode;
 
-use crate::launcher::ui::Key;
+use omsi_ui::kit::Key;
 use crate::App;
 
 pub(crate) use reload::Kind;
@@ -316,6 +316,12 @@ impl App {
     /// The developer tools' frame: their files looked at, the overlays and the panel drawn
     /// over the picture (in place of the pause menu's screens, which are closed).
     pub(crate) fn frame_devtools(&mut self, dt: f32) {
+        let sim = self.player_to_drawn_pose();
+        self.devtools_now(dt);
+        self.player_back_to_sim_pose(sim);
+    }
+
+    fn devtools_now(&mut self, dt: f32) {
         let Some(s) = self.gfx.surface.as_ref() else { return };
         let (w, h) = (s.config.width as f32, s.config.height as f32);
         let dpi = self.window.as_ref().map(|w| w.scale_factor() as f32).unwrap_or(1.0);
@@ -480,7 +486,7 @@ pub(crate) fn apply_holds(d: Option<&DevTools>, v: &mut omsi_sim::VehicleInstanc
 
 /// Text onto the system's clipboard; false where there is none.
 fn copy_text(text: &str) -> bool {
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         thread_local! {
             // (kept alive: on X11 the text is gone when the clipboard is dropped)
@@ -493,6 +499,10 @@ fn copy_text(text: &str) -> bool {
             }
             c.as_mut().is_some_and(|cb| cb.set_text(text.to_string()).is_ok())
         })
+    }
+    #[cfg(target_os = "ios")]
+    {
+        crate::apple::set_clipboard(text)
     }
     #[cfg(target_os = "android")]
     {
@@ -507,9 +517,9 @@ fn open_file(path: &std::path::Path) {
     let _ = std::process::Command::new("open").arg(path).spawn();
     #[cfg(target_os = "windows")]
     let _ = std::process::Command::new("cmd").args(["/C", "start", ""]).arg(path).spawn();
-    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android"), not(target_os = "ios")))]
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     let _ = path;
 }
 

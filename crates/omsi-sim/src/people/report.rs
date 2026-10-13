@@ -58,27 +58,33 @@ impl PeopleSim {
     /// Everybody on foot on the ground, for the traffic to stop for: position, velocity
     /// and whether they wait at a stop (a bus pulls up right beside those).
     pub fn on_foot(&self) -> Vec<(DVec3, DVec2, bool)> {
-        self.people
-            .iter()
-            .filter(|p| p.place == Place::Ground)
-            .map(|p| {
-                let waiting = matches!(&p.state, State::Pax(x) if x.inside.is_none());
-                (p.position, p.vel, waiting)
-            })
-            .collect()
+        let mut out = Vec::new();
+        self.on_foot_into(&mut out);
+        out
+    }
+
+    /// `on_foot` into a list kept from frame to frame (the traffic asks every frame).
+    pub fn on_foot_into(&self, out: &mut Vec<(DVec3, DVec2, bool)>) {
+        out.clear();
+        out.extend(self.people.iter().filter(|p| p.place == Place::Ground).map(|p| {
+            let waiting = matches!(&p.state, State::Pax(x) if x.inside.is_none());
+            (p.position, p.vel, waiting)
+        }));
     }
 
     pub fn strollers(&self) -> Vec<(usize, f32)> {
-        self.people
-            .iter()
-            .filter_map(|p| match &p.state {
-                State::Strolling(walk) => walk
-                    .legs
-                    .get(walk.leg)
-                    .map(|leg| (leg.lane, leg.dist(walk.s))),
-                _ => None,
-            })
-            .collect()
+        let mut out = Vec::new();
+        self.strollers_into(&mut out);
+        out
+    }
+
+    /// `strollers` into a list kept from frame to frame (the traffic asks every frame).
+    pub fn strollers_into(&self, out: &mut Vec<(usize, f32)>) {
+        out.clear();
+        out.extend(self.people.iter().filter_map(|p| match &p.state {
+            State::Strolling(walk) => walk.legs.get(walk.leg).map(|leg| (leg.lane, leg.dist(walk.s))),
+            _ => None,
+        }));
     }
 
     /// Report the waiting and alighting passengers to the bus script, the way OMSI does.
@@ -173,7 +179,9 @@ impl PeopleSim {
     }
 
     /// People sitting on each `[passpos]` of the player's bus, for `GetHumanCountOnSeat`
-    /// (the BVG Citaro folds its tip-up seats down when somebody sits on them).
+    /// (the BVG Citaro folds its tip-up seats down when somebody sits on them): the
+    /// passengers, and a player on foot or a LAN player's figure sitting there too (on a
+    /// seat the script still showed folded up, they sat in the air).
     pub fn seat_counts(&self) -> Vec<u32> {
         let Some(cabin) = self.player_cabin.as_ref() else {
             return Vec::new();
@@ -182,7 +190,8 @@ impl PeopleSim {
             State::Pax(x) if x.inside == Some(BusId::Player) && x.task == Task::SittingInBus => x.seat,
             _ => None,
         });
-        seat_numbers(&cabin.seats, sitting)
+        let avatars = self.avatar_cmds.values().filter_map(|c| c.seat).filter(|s| s.0 == BusId::Player).map(|s| s.1);
+        seat_numbers(&cabin.seats, sitting.chain(avatars))
     }
 
     /// How many people stand on each `paths.cfg` link inside the player's bus, for the
@@ -230,6 +239,9 @@ impl PeopleSim {
                 "; {:.2} ms a frame, longest {worst:.1} ms",
                 total / n as f64
             ));
+            if !self.stage_stats.0.is_empty() {
+                out.push_str(&format!("; stages avg/longest ms: {}", self.stage_stats.line(n)));
+            }
         }
         out
     }
