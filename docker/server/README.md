@@ -1,108 +1,107 @@
-# Servidor dedicado openOMSI (Linux, Docker)
+# openOMSI dedicated server (Linux, Docker)
 
-O servidor é o próprio `openomsi` iniciado com `--server`: sem janela, sem som e sem placa de
-vídeo. Este container o compila para Linux e o roda com a sua instalação do OMSI 2 montada
-**somente leitura**. Serve tanto para testar localmente (Docker Desktop no Windows) quanto
-para instalar num servidor Linux.
+The server is `openomsi` itself started with `--server`: no window, no sound, no graphics
+card. This container builds it for Linux and runs it with your OMSI 2 installation mounted
+**read only**. It serves both for a local test (Docker Desktop on Windows) and for a Linux
+server.
 
-## Requisitos
+## Requirements
 
-- Docker com Compose (Docker Desktop no Windows; `docker` + `docker compose` no Linux).
-- Uma instalação **completa** do OMSI 2 (a mesma que os jogadores têm: mapas, ônibus originais).
-  No Linux, copie a pasta do OMSI 2 para o servidor (ex.: `/srv/omsi2`).
+- Docker with Compose (Docker Desktop on Windows; `docker` + `docker compose` on Linux).
+- A **complete** OMSI 2 installation (the one the players have: maps, stock buses). On Linux,
+  copy the OMSI 2 folder to the server (e.g. `/srv/omsi2`).
 
-## Instalar e iniciar
+## Install and start
 
-Nesta pasta (`docker/server`):
+In this folder (`docker/server`):
 
 ```sh
 cp .env.example .env              # Windows: copy .env.example .env
-#   edite .env: OMSI_DIR = a pasta do OMSI 2 (a que tem Omsi.exe, maps e Vehicles)
+#   edit .env: OMSI_DIR = your OMSI 2 folder (the one with Omsi.exe, maps and Vehicles)
 mkdir config
-cp server.cfg.example config/server.cfg   # opcional: sem ele o servidor escreve um com os padrões
-docker compose up -d --build      # a primeira compilação leva vários minutos
-docker compose logs -f            # acompanhe: "server '...': map ..." e depois o mapa carregado
+cp server.cfg.example config/server.cfg   # optional: without it the server writes one with the defaults
+docker compose up -d --build      # the first build takes several minutes
+docker compose logs -f            # watch: "server '...': map ..." and then the map loaded
 ```
 
-O servidor está pronto quando `http://<endereço>:27025/status` responde (o Docker também mostra
-`healthy` em `docker ps`).
+The server is ready when `http://<address>:27025/status` answers (Docker shows `healthy` in
+`docker ps` too).
 
-### Portas
+### Ports
 
-| Porta | Protocolo | Para quê |
+| Port | Protocol | What for |
 |---|---|---|
-| 27015 | UDP | a sessão (posições, eventos) |
-| 27015 | TCP | mods do mapa e **ônibus dos jogadores** (envio e download por conteúdo) |
-| 27025 | TCP | web: `/status`, ícone, jogadores via WebSocket |
+| 27015 | UDP | the session (positions, events) |
+| 27015 | TCP | the map's mods and the **players' buses** (sent and fetched by content) |
+| 27025 | TCP | web: `/status`, icon, players over WebSocket |
 
-Num servidor na internet, libere as três no firewall.
+On a server on the internet, open all three in the firewall.
 
-## Entrar no servidor (jogadores)
+## Joining (players)
 
-No launcher: **Multiplayer → Join**, endereço `<endereço do servidor>:27015` (localmente:
-`127.0.0.1:27015`). Ou pela linha de comando:
+In the launcher: **Multiplayer → Join**, address `<server address>:27015` (locally
+`127.0.0.1:27015`). Or from the command line:
 `openomsi.exe --lan-join 127.0.0.1:27015 --bus Vehicles/... --map maps/Grundorf/global.cfg`.
 
-Todos os jogadores precisam desta versão do jogo (branch `custom`) para enviar e receber os
-ônibus por conteúdo.
+Every player needs a game with the players' buses by content to send and receive them.
 
-## Configurar o servidor (mapa, nome, tráfego)
+## Configuring the server (map, name, traffic)
 
 ```powershell
 .\configurar-servidor.ps1
 ```
 
-Um menu: **1) Trocar mapa** lista os mapas da sua pasta do OMSI 2. O escolhido vai para o
-servidor com tudo o que ele usa (objetos, splines, carros do tráfego, pessoas, texturas do
-chão), na pasta `content` desta pasta. Depois o `server.cfg` é ajustado e o servidor é
-reiniciado. No mesmo disco do OMSI os arquivos entram como links físicos, sem ocupar espaço de
-novo. As outras opções mudam nome e mensagem, tráfego e número de jogadores, reiniciam e
-mostram o status.
+A menu: **1) Change map** lists the maps of your OMSI 2 folder. The chosen one goes to the
+server with everything it uses (scenery objects, splines, traffic cars, people, ground
+textures), into the `content` folder beside this file. Then `server.cfg` is adjusted and the
+server restarted. On the same disk as OMSI the files go in as hard links, taking no space
+again. The other options change the name and message, the traffic and the number of players,
+restart the server and show its status.
 
-O servidor **não entrega mapas** aos jogadores (`share_maps = 0` no `server.cfg`, o padrão): um
-mapa grande tem vários GB e acabaria com a banda do servidor. Cada jogador instala o mapa por
-conta própria; quem entrar sem ele é avisado de qual mapa falta. Os ônibus dos jogadores
-continuam sendo distribuídos pelo servidor.
+The server **does not hand out maps** to the players (`share_maps = 0` in `server.cfg`, the
+default): a big map is several GB and would eat the server's bandwidth. Every player installs
+the map themselves; whoever joins without it is told which map is missing. The players'
+buses are still passed on by the server.
 
-Arquivos que o mapa cita e que não existem na sua máquina ficam listados em
-`content\openomsi-map-pack-<mapa>.txt`: o servidor e os jogadores também não os terão.
+Files the map names that do not exist on your machine are listed in
+`content\openomsi-map-pack-<map>.txt`: neither the server nor the players will have them.
 
-Para um servidor em outra máquina, gere um `.zip` e descompacte-o na pasta de conteúdo de lá:
-`openomsi.exe --root "<pasta do OMSI 2>" --pack-map "<nome do mapa>" --pack-to mapa.zip`.
+For a server on another machine, make a `.zip` and unpack it into that machine's content
+folder: `openomsi.exe --root "<OMSI 2 folder>" --pack-map "<map name>" --pack-to map.zip`.
 
-## Ônibus dos jogadores
+## Players' buses
 
-- Quem entra com um ônibus que o servidor não tem **envia** o ônibus na tela de carregamento
-  ("Enviando seu ônibus ao servidor", com progresso). Só vai o que o servidor não tem: arquivos
-  que ele tem na própria instalação, na mesma versão, não são enviados.
-- Os outros jogadores veem o ônibus **exatamente como o motorista tem** (mesmos arquivos,
-  mesma pintura, mesmo `.cti`): da própria cópia, se for idêntica, ou baixado do servidor.
-  Enquanto isso, uma **caixa cinza do tamanho do ônibus** com "carregando o ônibus: 40%".
-- Nada é gravado nas pastas `Vehicles` de ninguém; o `.cti` e as pinturas de cada jogador
-  continuam os dele.
-- O servidor guarda os ônibus no volume `openomsi-data` (`/root/.openomsi/lan-store`), todas as
-  versões. Ônibus que ninguém usa há `uploads_keep_days` dias (30) saem; com o disco curto, os
-  menos usados saem primeiro. Nenhum ônibus é recusado pelo tamanho.
+- A player who joins with a bus the server lacks **sends** it under the loading screen
+  ("Sending your bus to the server", with its progress). Only what the server lacks goes:
+  files it has in its own installation, in the same version, are not sent.
+- The other players see the bus **exactly as its driver has it** (same files, same paint,
+  same `.cti`): from their own copy when it is identical, else fetched from the server.
+  Meanwhile, a **grey box of the bus's size** with "loading the bus: 40%".
+- Nothing is written into anybody's `Vehicles` folders; every player's `.cti` and paints
+  stay their own.
+- The server keeps the buses in the `openomsi-data` volume (`/root/.openomsi/lan-store`),
+  every version. Buses nobody has used for `uploads_keep_days` days (30) go; when the disk
+  runs short, the least used go first. No bus is refused for its size.
 
-## Teste automático de ponta a ponta (Windows)
+## Automatic end-to-end test (Windows)
 
-Com o servidor rodando e o cliente compilado (`cargo build --release -p omsi-app`):
+With the server running and the game built (`cargo build --release -p omsi-app`):
 
 ```powershell
 scripts\e2e-bus-sync.ps1 -OmsiDir "D:\SteamLibrary\steamapps\common\OMSI 2"
 ```
 
-Dois jogos sem janela entram no servidor: A com uma cópia modificada do SD77 e B com um SD80
-original. O script confere nos logs que o servidor recebeu só o arquivo diferente, que B baixou
-o ônibus de A pelo conteúdo e que A reconheceu o SD80 de B como idêntico.
+Two games without a window join the server: A with a modified copy of the SD77, B with a
+stock SD80. The script checks in the logs that the server received only the file that
+differs, that B fetched A's bus by its content and that A recognised B's SD80 as identical.
 
-## Comandos úteis
+## Useful commands
 
 ```sh
-docker compose ps                 # estado (healthy quando o /status responde)
-docker compose logs -f            # log do servidor
-docker compose restart            # reiniciar (os ônibus guardados continuam)
-docker compose down               # parar (o volume com os ônibus continua)
-docker compose down -v            # parar e APAGAR os ônibus guardados
+docker compose ps                 # state (healthy once /status answers)
+docker compose logs -f            # the server's log
+docker compose restart            # restart (the kept buses stay)
+docker compose down               # stop (the volume with the buses stays)
+docker compose down -v            # stop and DELETE the kept buses
 curl http://127.0.0.1:27025/status
 ```
