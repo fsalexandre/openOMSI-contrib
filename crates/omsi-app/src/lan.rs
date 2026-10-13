@@ -1225,6 +1225,12 @@ fn mods_route(host: SocketAddr, session: u64) -> Option<SocketAddr> {
 pub fn share_mods(args: &mut Args, lan: &mut LanSession) {
     match lan.role {
         Role::Host => {
+            // (a player's game hosting a session takes the joining players' buses as a server
+            // does, and keeps its own for them: `lan_mods::upload::keep_own`; a server takes
+            // them as its server.cfg says)
+            if args.server.is_none() {
+                crate::lan_mods::upload::accept(true);
+            }
             if let Some(port) = lan.local_addr().map(|a| a.port()) {
                 crate::lan_mods::serve(port, lan.session, args);
             }
@@ -3327,7 +3333,8 @@ pub fn tick(
         let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
         if seen.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
             *seen = Some(Instant::now());
-            let fps: Vec<String> = lan.peers().map(|p| p.pose.content.clone()).filter(|c| omsi_net::is_fingerprint(c)).collect();
+            // (and the hosting game's own, kept for the others)
+            let fps: Vec<String> = lan.peers().map(|p| p.pose.content.clone()).chain(std::iter::once(mine.content.clone())).filter(|c| omsi_net::is_fingerprint(c)).collect();
             crate::lan_mods::vehicles::in_use(fps.iter().map(|s| s.as_str()));
         }
     }
@@ -3347,9 +3354,12 @@ pub fn tick(
     }
     // what our bus is, by its content (`lan_mods::identity`), for whoever draws it
     crate::lan_mods::upload::identify(&args.root, &mine.bus, &mine.paint, || player.as_deref().map(|p| crate::lan_mods::upload::own_files(&args.root, p)).unwrap_or_default());
-    // our bus to a server that lacks it, and the others' buses it passes on (`lan_mods::upload`)
+    // our bus to a server that lacks it, and the others' buses it passes on (`lan_mods::upload`);
+    // a hosting game keeps its own bus for the players who join it
     if lan.role == Role::Client {
         crate::lan_mods::upload::tick(&args.root, &mine.bus, &mine.paint, || player.as_deref().map(|p| crate::lan_mods::upload::own_files(&args.root, p)).unwrap_or_default());
+    } else if args.server.is_none() {
+        crate::lan_mods::upload::keep_own(&args.root, &mine.bus, &mine.paint, || player.as_deref().map(|p| crate::lan_mods::upload::own_files(&args.root, p)).unwrap_or_default());
     }
     sync_vars(lan, game, player.as_deref(), dt);
     game.world.tick(

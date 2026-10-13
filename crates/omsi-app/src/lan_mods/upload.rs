@@ -586,6 +586,73 @@ struct Sending {
 
 static SENDING: Mutex<Option<Sending>> = Mutex::new(None);
 
+/// The bus (and paint) a hosting game has kept for the others, and whether one is being kept.
+static KEPT_OWN: Mutex<(String, bool)> = Mutex::new((String::new(), false));
+
+/// Once a frame (a player's game hosting a session): our own bus into our store, by its
+/// fingerprint, once it is loaded - the joining players ask this game for it as they would a
+/// server (`vehicles::fetch`). A server has no bus of its own; a joining player sends its
+/// bus to the host instead (`tick`).
+pub(crate) fn keep_own(root: &Path, bus: &str, paint: &str, own: impl FnOnce() -> Vec<PathBuf>) {
+    if bus.is_empty() || !serving() {
+        return;
+    }
+    let key = format!("{bus}|{paint}");
+    {
+        let mut k = KEPT_OWN.lock().unwrap_or_else(|e| e.into_inner());
+        if k.0 == key || k.1 {
+            return;
+        }
+        *k = (key.clone(), true);
+    }
+    let own = own();
+    let (root, bus, paint) = (root.to_path_buf(), bus.to_string(), paint.to_string());
+    let spawned = std::thread::Builder::new().name("lan-keep-own".into()).spawn(move || {
+        let r = match own_manifest(&root, &bus, &paint, own) {
+            Some((_, _, files)) => keep_files(&bus, files),
+            None => Err("its files make no valid list".to_string()),
+        };
+        match r {
+            Ok(fp) => log::info!("uploads: our bus {bus} is kept for the others as {fp}"),
+            Err(e) => log::warn!("uploads: our bus {bus} could not be kept for the others: {e}"),
+        }
+        KEPT_OWN.lock().unwrap_or_else(|e| e.into_inner()).1 = false;
+    });
+    if spawned.is_err() {
+        *KEPT_OWN.lock().unwrap_or_else(|e| e.into_inner()) = (String::new(), false);
+    }
+}
+
+/// Our bus's files (`files`: relative path, where each is read from) into this game's store
+/// as a server keeps a bus that was sent to it: each checked as one that came would be (a
+/// file refused for what it is is withheld, the bus kept without it), the bus kept by the
+/// fingerprint worked out from them. The fingerprint.
+pub(super) fn keep_files(bus: &str, files: Vec<(String, PathBuf)>) -> Result<String, String> {
+    if !super::vehicles::is_open() && !super::vehicles::open() {
+        return Err("no store".into());
+    }
+    let bus_rel = omsi_net::vehicle_path(bus).unwrap_or_else(|| bus.to_string());
+    let manifest = VehicleManifest { bus: bus_rel, entries: hashed(&files) }.validated()?;
+    let source: HashMap<String, PathBuf> = files.iter().map(|(rel, p)| (rel.to_lowercase(), p.clone())).collect();
+    for k in super::vehicles::missing(&manifest) {
+        let e = &manifest.entries[k];
+        let path = source.get(&e.path.to_lowercase()).ok_or_else(|| format!("{}: not among our files", e.path))?;
+        let data = omsi_cfg::vfs::read(path).map_err(|x| format!("{}: {x}", path.display()))?;
+        if data.len() as u64 != e.size || super::sha256_of(&data) != e.sha256 {
+            return Err(format!("{} changed while it was kept", e.path));
+        }
+        let refused = if super::looks_executable(&data[..data.len().min(8)]) { Some(format!("{}: a program", e.path)) } else { super::quarantine::check(&e.path, &data).err() };
+        match refused {
+            Some(why) => {
+                log::warn!("uploads: {why}; our bus is kept without it");
+                super::vehicles::withhold(e, &why);
+            }
+            None => super::vehicles::put(e, &data)?,
+        }
+    }
+    super::vehicles::commit(manifest).map(|(fp, _)| fp)
+}
+
 /// Once a frame (a joining player): offer our bus to the host once it is loaded.
 pub(crate) fn tick(root: &Path, bus: &str, paint: &str, own: impl FnOnce() -> Vec<PathBuf>) {
     if bus.is_empty() {
@@ -1171,6 +1238,45 @@ mod tests {
         let (raw, mut out, mut input) = super::super::open(host, session).unwrap();
         let plan = offer_pieces(&mut out, &mut input, &serde_json::to_vec(m).unwrap()).unwrap();
         ((raw, out, input), plan)
+    }
+
+    /// A player's game hosting a session keeps its own bus in its store as a server keeps one
+    /// sent to it - by the fingerprint its player announces, so the joining players fetch it
+    /// by that; a file refused for what it is is withheld, as ever.
+    #[test]
+    fn a_hosting_game_keeps_its_own_bus_for_the_others() {
+        let _turn = super::super::vehicles::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let store_dir = temp("own-store");
+        super::super::vehicles::open_for_test(&store_dir);
+        let content = temp("own-content");
+        let files = [
+            ("Vehicles/OwnBus/own.bus", b"[model]\nmodel\\model.cfg\nown\n".to_vec()),
+            ("Vehicles/OwnBus/model/model.cfg", b"[mesh]\nx.o3d\n".to_vec()),
+            ("Vehicles/OwnBus/texture/x.dat", vec![4u8; 50_000]),
+            ("Vehicles/OwnBus/texture/bad.dds", b"no texture at all".to_vec()),
+        ];
+        let mut chosen = Vec::new();
+        for (rel, data) in &files {
+            let p = rel.split('/').fold(content.clone(), |p, c| p.join(c));
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, data).unwrap();
+            chosen.push((rel.to_string(), p));
+        }
+        let fp = keep_files("Vehicles/OwnBus/own.bus", chosen.clone()).unwrap();
+        let m = VehicleManifest { bus: "Vehicles/OwnBus/own.bus".into(), entries: chosen.iter().map(|(r, p)| entry(r, &std::fs::read(p).unwrap())).collect() }.validated().unwrap();
+        assert_eq!(fp, m.fingerprint(), "the fingerprint its player's game announces");
+        assert_eq!(super::super::vehicles::manifest(&fp), Some(m));
+        // mounted and served as a server would, without the refused file
+        assert!(super::super::vehicles::bus_file(&fp).is_some());
+        let held = super::super::vehicles::withheld_of(&fp);
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!(held[0].path, "Vehicles/OwnBus/texture/bad.dds");
+        assert!(super::super::vehicles::blob(&super::super::sha256_of(b"no texture at all")).is_none());
+        assert_eq!(super::super::vehicles::blob(&super::super::sha256_of(&files[2].1)), Some(files[2].1.clone()));
+        // the same bus again: kept already
+        assert_eq!(keep_files("Vehicles/OwnBus/own.bus", chosen).unwrap(), fp);
+        let _ = std::fs::remove_dir_all(&content);
+        let _ = std::fs::remove_dir_all(&store_dir);
     }
 
     #[test]

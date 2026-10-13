@@ -124,7 +124,8 @@ them on to every other player, so nobody sees a stand-in.
   To forget a bus by hand, stop the server and delete its `.json`.
 * With `vehicles` empty the server then offers any bus (the launcher no longer limits the
   choice to the server's own buses); with a `vehicles` list only those buses are taken.
-* `accept_uploads = 0` switches it off; a player's game hosting a session never takes uploads.
+* `accept_uploads = 0` switches it off. A player's game hosting a session (`--lan-host`) takes
+  the joining players' buses the same way, and keeps its own bus in its store for them.
 
 What is still to come from the plan below: a world without the renderer's data structures
 (the server keeps the tiles' meshes in memory for nothing), tiles streamed by the players'
