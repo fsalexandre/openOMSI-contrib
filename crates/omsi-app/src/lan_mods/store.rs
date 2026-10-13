@@ -22,6 +22,8 @@ const KEY_FILE: &str = "store.key.dpapi";
 #[cfg(not(windows))]
 const KEY_FILE: &str = "store.key";
 const BLOB: &str = "blob";
+const PIECE: &str = "piece";
+const PACKED: &str = "zpiece";
 
 pub(crate) struct Store {
     dir: PathBuf,
@@ -86,6 +88,16 @@ impl Store {
         std::fs::metadata(&f.blob).ok().filter(|m| m.len() == omsi_cfg::vfs::sealed_len(e.size)).map(|_| f)
     }
 
+    /// `e`'s file read back (unsealed and checked: the seal is bound to its SHA-256).
+    pub(crate) fn read(&self, e: &Entry) -> std::io::Result<Vec<u8>> {
+        let f = self.has(e).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "not in the store"))?;
+        let plain = omsi_cfg::vfs::unseal(&self.key, &f.aad, std::fs::read(&f.blob)?)?;
+        if plain.len() as u64 != e.size {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "another size than its list's"));
+        }
+        Ok(plain)
+    }
+
     /// Keep `data` (checked against `e` already) sealed.
     pub(crate) fn put(&self, e: &Entry, data: &[u8]) -> std::io::Result<SealedFile> {
         let f = self.file(e);
@@ -93,6 +105,93 @@ impl Store {
         let tmp = f.blob.with_extension("part");
         std::fs::write(&tmp, sealed).and_then(|_| std::fs::rename(&tmp, &f.blob))?;
         Ok(f)
+    }
+
+    /// Piece `i` of the file `sha` (see `pieces`): where it is kept, and what its seal is
+    /// bound to - that file and that place in it, so no piece passes for another.
+    fn piece_file(&self, sha: &str, i: u64) -> (PathBuf, Vec<u8>) {
+        let aad = format!("{}:{i}", sha.to_ascii_lowercase()).into_bytes();
+        let name: String = hmac::sign(&self.names, &aad).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+        (self.dir.join(format!("{name}.{PIECE}")), aad)
+    }
+
+    /// Is piece `i` (`len` bytes) of `sha` here?
+    pub(crate) fn has_piece(&self, sha: &str, i: u64, len: u64) -> bool {
+        std::fs::metadata(self.piece_file(sha, i).0).is_ok_and(|m| m.len() == omsi_cfg::vfs::sealed_len(len))
+    }
+
+    /// Keep piece `i` of `sha` sealed, as it came (its file is checked once it is whole).
+    pub(crate) fn put_piece(&self, sha: &str, i: u64, data: &[u8]) -> std::io::Result<()> {
+        let (path, aad) = self.piece_file(sha, i);
+        let sealed = omsi_cfg::vfs::seal(&self.key, &aad, data)?;
+        let tmp = path.with_extension("partpiece");
+        std::fs::write(&tmp, sealed).and_then(|_| std::fs::rename(&tmp, &path))
+    }
+
+    /// Piece `i` of `sha` read back (unsealed: it is the piece kept for that place).
+    pub(crate) fn piece(&self, sha: &str, i: u64, len: u64) -> std::io::Result<Vec<u8>> {
+        let (path, aad) = self.piece_file(sha, i);
+        let plain = omsi_cfg::vfs::unseal(&self.key, &aad, std::fs::read(path)?)?;
+        if plain.len() as u64 != len {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "a piece of another size"));
+        }
+        Ok(plain)
+    }
+
+    /// The pieces of `sha` (`count` of them) go: its file is kept whole, or was not that file.
+    pub(crate) fn remove_pieces(&self, sha: &str, count: u64) {
+        for i in 0..count {
+            let _ = std::fs::remove_file(self.piece_file(sha, i).0);
+        }
+    }
+
+    /// Piece `i` of the kept file `sha` packed at its smallest, as it goes over the wire (see
+    /// `vehicles::recompress`): where it is kept, and what its seal is bound to.
+    fn packed_file(&self, sha: &str, i: u64) -> (PathBuf, Vec<u8>) {
+        let aad = format!("{}:{i}:packed", sha.to_ascii_lowercase()).into_bytes();
+        let name: String = hmac::sign(&self.names, &aad).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+        (self.dir.join(format!("{name}.{PACKED}")), aad)
+    }
+
+    /// Keep piece `i` of `sha` packed (`codec` `-` with no bytes: it goes as it is).
+    pub(crate) fn put_packed(&self, sha: &str, i: u64, codec: char, wire: &[u8]) -> std::io::Result<()> {
+        let (path, aad) = self.packed_file(sha, i);
+        let mut data = Vec::with_capacity(1 + wire.len());
+        data.push(codec as u8);
+        data.extend_from_slice(wire);
+        let sealed = omsi_cfg::vfs::seal(&self.key, &aad, &data)?;
+        let tmp = path.with_extension("partpiece");
+        std::fs::write(&tmp, sealed).and_then(|_| std::fs::rename(&tmp, &path))
+    }
+
+    /// Piece `i` of `sha` packed, if it is: (codec, bytes on the wire).
+    pub(crate) fn packed(&self, sha: &str, i: u64) -> Option<(char, Vec<u8>)> {
+        let (path, aad) = self.packed_file(sha, i);
+        let mut data = omsi_cfg::vfs::unseal(&self.key, &aad, std::fs::read(path).ok()?).ok()?;
+        let codec = *data.first()? as char;
+        data.remove(0);
+        Some((codec, data))
+    }
+
+    /// Is piece `i` of `sha` packed?
+    pub(crate) fn has_packed(&self, sha: &str, i: u64) -> bool {
+        self.packed_file(sha, i).0.exists()
+    }
+
+    /// The packed pieces of `sha` (`count` of them) go with its file.
+    pub(crate) fn remove_packed(&self, sha: &str, count: u64) {
+        for i in 0..count {
+            let _ = std::fs::remove_file(self.packed_file(sha, i).0);
+        }
+    }
+
+    /// Pieces of files left unfinished for longer than `age` go. How many.
+    pub(crate) fn remove_stale_pieces(&self, age: std::time::Duration) -> usize {
+        let Ok(rd) = std::fs::read_dir(&self.dir) else { return 0 };
+        let old = |e: &std::fs::DirEntry| e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d > age);
+        rd.flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == PIECE || x == "partpiece") && old(e) && std::fs::remove_file(e.path()).is_ok())
+            .count()
     }
 }
 
@@ -115,7 +214,7 @@ pub(crate) fn remove_legacy(dir: &Path) {
 
 fn remove_blobs(dir: &Path) -> usize {
     let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
-    rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == BLOB) && std::fs::remove_file(e.path()).is_ok()).count()
+    rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == BLOB || x == PIECE || x == PACKED) && std::fs::remove_file(e.path()).is_ok()).count()
 }
 
 fn load_key(path: &Path) -> Option<[u8; 32]> {

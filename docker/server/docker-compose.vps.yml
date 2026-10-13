@@ -1,0 +1,35 @@
+# openOMSI dedicated server on a VPS (/srv/openomsi/docker-compose.yml on the VPS).
+# The image is built elsewhere and loaded (`deploy-vps.sh --image`); the program it runs is
+# /srv/openomsi/bin/openomsi, mounted over the image's, so a new build is only that file
+# (`deploy-vps.sh`). Players join at your-server.example.com (port 27015).
+services:
+  openomsi-server:
+    image: openomsi-server:custom
+    container_name: openomsi-server
+    restart: unless-stopped
+    # the program of the last deploy (the image's own is the fallback of a fresh VPS:
+    # `deploy-vps.sh` puts one in bin/ first)
+    entrypoint: ["/opt/openomsi-bin/openomsi"]
+    # (an entrypoint of its own drops the image's arguments: given again)
+    command: ["--root", "/omsi", "--server", "/server/server.cfg"]
+    ports:
+      - "27015:27015/udp"
+      - "27015:27015/tcp"
+      - "27025:27025/tcp"
+    volumes:
+      - /srv/openomsi/bin:/opt/openomsi-bin:ro
+      # the OMSI 2 content the server needs (base files and its maps), read only
+      - /srv/openomsi/omsi:/omsi:ro
+      - /srv/openomsi/config:/server
+      # the server's content folder (maps put on it later)
+      - /srv/openomsi/content:/content
+      # the players' buses, kept by their content, and the logs
+      - openomsi-data:/root/.openomsi
+    environment:
+      OMSI_CONTENT: /content
+    # (the AI agents share this machine: the server never takes more than this)
+    mem_limit: 6g
+    stop_grace_period: 20s
+
+volumes:
+  openomsi-data:

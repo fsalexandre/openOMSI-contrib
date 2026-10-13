@@ -1351,7 +1351,7 @@ impl Launcher {
         };
         self.ui.icon("account_circle", Vec2::new(card.x + 22.0, card.center().y), 24.0, TEXT_DIM);
         self.ui.text_in(if name.is_empty() { "No driver" } else { &name }, Rect::new(card.x + 42.0, card.y + 6.0, card.w - 48.0, 18.0), 13.0, Weight::Medium, TEXT, Align::Left);
-        self.ui.text_in(&format!("Level {level}"), Rect::new(card.x + 42.0, card.y + 24.0, card.w - 48.0, 16.0), 11.5, Weight::Regular, TEXT_DIM, Align::Left);
+        self.ui.text_in(&format!("{} {level}", omsi_ui::tr("Level")), Rect::new(card.x + 42.0, card.y + 24.0, card.w - 48.0, 16.0), 11.5, Weight::Regular, TEXT_DIM, Align::Left);
     }
 
     fn status_bar(&mut self) {

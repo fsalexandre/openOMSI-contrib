@@ -246,7 +246,7 @@ fn worker() {
                     }
                     Err(e) => {
                         log::warn!("translation: the model could not be loaded: {e}");
-                        set_status(format!("The translation model could not be loaded: {e}"));
+                        set_status(format!("{}: {e}", omsi_ui::tr("The translation model could not be loaded")));
                         omsi_ui::i18n::set_fallback(None);
                         return;
                     }

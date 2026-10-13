@@ -58,6 +58,8 @@ gilrs = "0.11"
 ureq.workspace = true
 sha2.workspace = true
 ring.workspace = true
+flate2.workspace = true
+zstd.workspace = true
 rust-i18n = "4"
 # updates: the release archives from GitHub
 zip.workspace = true

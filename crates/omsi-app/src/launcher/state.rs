@@ -580,12 +580,13 @@ impl State {
             }
         };
         if let Some(info) = info.as_ref() {
-            // A map not installed here comes with the server's mods when the game joins
-            // (`lan_mods`), so this is a notice, not a refusal.
+            // A map not installed here: a server passes it on only when it says so
+            // (`share_maps`, off by default - a big map is gigabytes), so the player is told
+            // to install it. A notice, not a refusal.
             // The Drive page needs a map of this installation chosen, so the choice stays
             // as it is then: `duty()` starts the game on the server's map anyway.
             if !self.maps.is_empty() && !self.maps.iter().any(|m| m.file.eq_ignore_ascii_case(&info.map)) {
-                self.set_status(format!("The server plays {}, which is not installed here: it is fetched from the server on joining.", info.map), false);
+                self.set_status(format!("The server plays {}, which is not installed here: install that map to drive with the others.", info.map), true);
             } else {
                 self.choice.map = info.map.clone();
             }
@@ -597,8 +598,11 @@ impl State {
         self.join = (true, format!("the server {name}"));
         self.join_checked = address.to_string();
         self.touched();
-        let how = if proto == JoinProto::Udp { " over UDP" } else { "" };
-        self.set_status(format!("Joined {name}{how} - choose your bus and duty, then Start the duty"), false);
+        if proto == JoinProto::Udp {
+            self.set_status(format!("Joined {name} over UDP - choose your bus and duty, then Start the duty"), false);
+        } else {
+            self.set_status(format!("Joined {name} - choose your bus and duty, then Start the duty"), false);
+        }
     }
 
     /// Back to playing alone (the Drive page's "Leave Server").
@@ -768,7 +772,7 @@ impl State {
                 true
             }
             Err(e) => {
-                self.set_status(format!("Could not save settings: {e:#}"), true);
+                self.set_status(format!("{}: {e:#}", omsi_ui::tr("Could not save settings")), true);
                 false
             }
         }
@@ -848,7 +852,7 @@ impl State {
                 log::error!("launcher: a background job stopped: {why}");
                 self.loading_content = false;
                 self.loading_lines = false;
-                self.set_status(format!("Reading the content stopped on an error: {why}"), true);
+                self.set_status(format!("{}: {why}", omsi_ui::tr("Reading the content stopped on an error")), true);
             }
             Msg::Server { address, info } => {
                 // the host of the code typed in: its map is the one the duty is chosen on
@@ -880,7 +884,7 @@ impl State {
                 self.weathers = weathers;
                 self.pick_map();
                 self.load_lines();
-                self.set_status(format!("{} maps - reading the buses...", self.maps.len()), false);
+                self.set_status(format!("Maps: {} - reading the buses...", self.maps.len()), false);
             }
             Msg::VehiclesRead { batch, done, total } => {
                 if !self.content_first {
@@ -888,7 +892,7 @@ impl State {
                 }
                 crate::mt::protect(batch.iter().flat_map(|v| [v.name.as_str(), v.manufacturer.as_str(), v.type_name.as_str()]).chain(batch.iter().flat_map(|v| v.paints.iter().map(|p| p.as_str()))));
                 self.vehicles.extend(batch);
-                self.set_status(format!("{} maps, {} buses - reading the vehicle folders: {done} of {total}", self.maps.len(), self.vehicles.len()), false);
+                self.set_status(format!("Maps: {}, buses: {} - reading the vehicle folders: {done} of {total}", self.maps.len(), self.vehicles.len()), false);
             }
             Msg::Content(Ok((maps, vehicles, weathers))) => {
                 // (names of things, not the interface: never machine-translated)
@@ -903,7 +907,7 @@ impl State {
                         }
                     }
                 }
-                self.set_status(format!("{} maps, {} buses, {} weathers", maps.len(), vehicles.len(), weathers.len()), false);
+                self.set_status(format!("Maps: {}, buses: {}, weathers: {}", maps.len(), vehicles.len(), weathers.len()), false);
                 self.maps = maps;
                 self.vehicles = vehicles;
                 self.weathers = weathers;
@@ -965,7 +969,7 @@ impl State {
                                 }
                             }
                         }
-                        self.set_status(format!("{} lines on {}{note}", self.lines.len(), self.choice.date), !note.is_empty());
+                        self.set_status(format!("{}{}", omsi_ui::tr(&format!("Lines on {}: {}", self.choice.date, self.lines.len())), omsi_ui::tr(&note)), !note.is_empty());
                     }
                     Err(e) => {
                         self.lines.clear();
@@ -982,7 +986,7 @@ impl State {
                             core::log_to_file(&format!("inbox: installing {s}"));
                         }
                         if !p.started.is_empty() {
-                            self.set_status(format!("Installing from the Mods folder: {}", p.started.iter().map(|x| x.rsplit('/').next().unwrap_or(x)).collect::<Vec<_>>().join(", ")), false);
+                            self.set_status(format!("{}: {}", omsi_ui::tr("Installing from the Mods folder"), p.started.iter().map(|x| x.rsplit('/').next().unwrap_or(x)).collect::<Vec<_>>().join(", ")), false);
                         }
                         let mut installed = false;
                         for j in &p.jobs {
@@ -1075,7 +1079,7 @@ impl State {
             Msg::Launched(Ok(l)) => {
                 core::log_to_file(&format!("launched pid {} ({} other game(s) running): {}", l.pid, l.others, l.command));
                 self.launched_pid = Some(l.pid);
-                self.set_status(format!("Game started (process {}), log {}{}", l.pid, l.log, if l.others > 0 { format!(" - {} other game(s) keep running", l.others) } else { String::new() }), false);
+                self.set_status(format!("{}{}", omsi_ui::tr(&format!("Game started (process {}), log {}", l.pid, l.log)), if l.others > 0 { omsi_ui::tr(&format!(" - {} other game(s) keep running", l.others)).into_owned() } else { String::new() }), false);
                 self.poll_now();
             }
             Msg::Launched(Err(e)) => {
@@ -1106,7 +1110,7 @@ impl State {
                 self.mod_busy = None;
                 match result {
                     Ok(name) => self.set_status(format!("{name} {done}"), false),
-                    Err(e) => self.set_status(format!("Not done: {e}"), true),
+                    Err(e) => self.set_status(format!("{}: {e}", omsi_ui::tr("Not done")), true),
                 }
                 // (the lists without it, or with it again)
                 self.load_mods();

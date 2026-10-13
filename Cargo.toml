@@ -63,6 +63,8 @@ sha2 = "0.10"
 # the LAN mods' encryption (X25519, HKDF, ChaCha20-Poly1305) and omsi-net's signatures
 ring = "0.17"
 flate2 = "1"
+# players' buses go over the wire packed with it (`lan_mods::pieces`)
+zstd = { version = "0.13", default-features = false }
 ab_glyph = "0.2"
 rfd = "0.15"
 libc = "0.2"

@@ -414,13 +414,70 @@ pub fn archive_of(path: &Path) -> Option<PathBuf> {
 
 /// Read a whole file, from a folder, a mounted archive or a sealed store.
 pub fn read(path: &Path) -> io::Result<Vec<u8>> {
-    if let Some((m, key)) = sealed::locate(path) {
-        return m.read(&key);
+    let r = if let Some((m, key)) = sealed::locate(path) {
+        m.read(&key)
+    } else {
+        match locate(path) {
+            Some((m, key)) => m.read(&key),
+            None => std::fs::read(path),
+        }
+    };
+    if r.is_ok() {
+        if RECORDING.load(std::sync::atomic::Ordering::Relaxed) {
+            READS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(path.to_path_buf());
+        }
+        AUDIT.with(|a| {
+            if let Some(v) = a.borrow_mut().as_mut() {
+                v.push(path.to_path_buf());
+            }
+        });
     }
-    match locate(path) {
-        Some((m, key)) => m.read(&key),
-        None => std::fs::read(path),
+    r
+}
+
+thread_local! {
+    static AUDIT: std::cell::RefCell<Option<Vec<PathBuf>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The files `read` gives out on this thread while it lasts: what loading one thing reads
+/// (another player's bus: does it read only its own files?).
+pub struct Audit(());
+
+impl Audit {
+    pub fn begin() -> Audit {
+        AUDIT.with(|a| *a.borrow_mut() = Some(Vec::new()));
+        Audit(())
     }
+
+    /// What was read, in order (a file read twice is there twice).
+    pub fn end(self) -> Vec<PathBuf> {
+        AUDIT.with(|a| a.borrow_mut().take().unwrap_or_default())
+    }
+}
+
+impl Drop for Audit {
+    fn drop(&mut self) {
+        AUDIT.with(|a| *a.borrow_mut() = None);
+    }
+}
+
+/// Every file `read` gave out while `record_reads` was on: what a LAN player's own bus
+/// really uses (the variant and paint driven, not its whole pack), to pass on to a server
+/// that lacks it.
+static RECORDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static READS: std::sync::Mutex<Option<std::collections::HashSet<PathBuf>>> = std::sync::Mutex::new(None);
+
+/// Note (or stop noting, and forget) the files `read` gives out.
+pub fn record_reads(on: bool) {
+    RECORDING.store(on, std::sync::atomic::Ordering::Relaxed);
+    if !on {
+        *READS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// The files read since `record_reads` was switched on.
+pub fn reads() -> Vec<PathBuf> {
+    READS.lock().unwrap_or_else(|e| e.into_inner()).iter().flatten().cloned().collect()
 }
 
 /// Read a text file with OMSI's encoding rules.
@@ -539,6 +596,27 @@ pub fn mount_env_zips() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_audit_notes_what_this_thread_reads_while_it_lasts() {
+        let d = std::env::temp_dir().join(format!("omsi-vfs-audit-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (a, b) = (d.join("a.cfg"), d.join("b.cfg"));
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        read(&a).unwrap();
+        let audit = Audit::begin();
+        read(&b).unwrap();
+        let _ = read(&d.join("missing.cfg"));
+        // (another thread's reads are its own)
+        let other = a.clone();
+        std::thread::spawn(move || read(&other).unwrap()).join().unwrap();
+        assert_eq!(audit.end(), vec![b.clone()]);
+        // over: nothing more is noted
+        read(&b).unwrap();
+        assert!(Audit::begin().end().is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
     use std::io::Write;
 
     /// A small archive with a wrapper folder, a stored and a deflated entry.

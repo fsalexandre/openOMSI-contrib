@@ -1123,7 +1123,7 @@ fn step_time(l: &mut Launcher, r: Rect) {
     if let Some(name) = joined_server_name(l) {
         // the server's world: nothing to choose here
         let info = l.state.joined_server.as_ref().and_then(|a| l.state.server_info.get(a)).and_then(|x| x.1.as_ref().ok()).cloned();
-        l.ui.heading(Rect::new(r.x, y, r.w, 28.0), &format!("Set by {name}"), Some("lock"));
+        l.ui.heading(Rect::new(r.x, y, r.w, 28.0), &format!("{} {name}", omsi_ui::tr("Set by")), Some("lock"));
         y += 36.0;
         let rows = [("Time", info.as_ref().map(|i| i.time.clone()).unwrap_or_default()), ("Weather", info.as_ref().map(|i| if i.weather.is_empty() { "the map's".to_string() } else { i.weather.clone() }).unwrap_or_default())];
         for (k, v) in rows {

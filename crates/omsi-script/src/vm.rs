@@ -145,6 +145,10 @@ pub struct Vm {
     rng: u64,
     /// Macro recursion guard.
     depth: u32,
+    /// Instructions the engine-called block now running may still take (`MAX_OPS`).
+    budget: u64,
+    /// A run was cut short by the budget (said once).
+    starved: bool,
 }
 
 /// The state every `random` starts from while no session seed is set (tests and tools
@@ -185,11 +189,17 @@ impl Default for Vm {
     fn default() -> Self {
         let session = SESSION_SEED.load(std::sync::atomic::Ordering::Relaxed);
         let rng = if session == 0 { FIXED_RNG } else { splitmix64(session ^ splitmix64(SEEDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed))) | 1 };
-        Self { stacks: Stacks::default(), rng, depth: 0 }
+        Self { stacks: Stacks::default(), rng, depth: 0, budget: MAX_OPS, starved: false }
     }
 }
 
 const MAX_DEPTH: u32 = 64;
+
+/// Instructions one run of an engine-called block may take, its macros included. The
+/// language has no loops, but a macro that calls itself a few times over, 64 deep, would run
+/// for ever - a script that came with another player's bus would stop this game. The stock
+/// scripts take thousands a frame; a run cut short leaves its variables as they are.
+const MAX_OPS: u64 = 2_000_000;
 
 impl Vm {
     pub fn new() -> Self {
@@ -244,6 +254,7 @@ impl Vm {
                 self.stacks.clear();
                 let value = if name.to_ascii_lowercase().ends_with("_off") { 0.0 } else { 1.0 };
                 self.stacks.push(value);
+                self.budget = MAX_OPS;
                 self.run_block(p, b, state, host);
                 true
             }
@@ -257,6 +268,7 @@ impl Vm {
     /// the last one's.
     fn run_top(&mut self, p: &Program, block: BlockId, state: &mut State, host: &mut dyn Host) {
         self.stacks.clear();
+        self.budget = MAX_OPS;
         self.run_block(p, block, state, host);
     }
 
@@ -269,6 +281,14 @@ impl Vm {
         let ops = &p.blocks[block as usize].ops;
         let mut pc = 0usize;
         while pc < ops.len() {
+            if self.budget == 0 {
+                if !self.starved {
+                    self.starved = true;
+                    log::warn!("script: {} took more than {MAX_OPS} instructions in one run and was cut short", p.blocks[block as usize].name);
+                }
+                break;
+            }
+            self.budget -= 1;
             let op = &ops[pc];
             pc += 1;
             match op {
@@ -648,6 +668,23 @@ mod tests {
         let distinct = a.iter().map(|v| *v as i64).collect::<std::collections::BTreeSet<_>>().len();
         assert!(distinct >= 15, "{a:?}");
         assert!(a.iter().any(|v| *v > 650000.0) && a.iter().any(|v| *v < 650000.0), "{a:?}");
+    }
+
+    /// A macro that calls itself twice, 64 deep, would make 2^64 calls: the run is cut short
+    /// at its budget, the game goes on, and the next run has a budget of its own.
+    #[test]
+    fn a_script_that_would_run_for_ever_is_cut_short() {
+        let p = prog("{macro:m}\n(L.L.a) 1 + (S.L.a) (M.L.m) (M.L.m)\n{end}\n{frame}\n(M.L.m)\n{end}\n");
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        let mut vm = Vm::new();
+        let mut st = State::new(&p);
+        let t0 = std::time::Instant::now();
+        vm.run_frame(&p, &mut st, &mut NullHost);
+        let a = st.get(p.var("a").unwrap());
+        assert!(a > 1000.0, "{a}");
+        vm.run_frame(&p, &mut st, &mut NullHost);
+        assert!(st.get(p.var("a").unwrap()) > a, "the next run had a budget of its own");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10), "{:?}", t0.elapsed());
     }
 
     #[test]

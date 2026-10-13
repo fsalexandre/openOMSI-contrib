@@ -189,6 +189,11 @@ impl Offscreen<'_> {
                 crate::lan::update_server_world(omsi_net::ws::WorldCounts { cars, buses, dormant, parked, walking, waiting, aboard, traffic: target });
             }
         }
+        // once a minute: what the players who left, their buses and the cars and people
+        // around them took is given back to the system (`release_free_memory`)
+        if i > 0 && i.is_multiple_of(1800) {
+            crate::release_free_memory();
+        }
         if lan_off.is_none() {
             std::thread::sleep(real_time.wait(Instant::now(), dt));
         }

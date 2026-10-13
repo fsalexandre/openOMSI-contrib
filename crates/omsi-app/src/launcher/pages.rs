@@ -763,7 +763,7 @@ fn driving_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, c
     // the pedals' response: softer (below 1) or stronger (above 1) than the pedal reads
     for (key, label, id) in [("pedal_throttle", "Throttle pedal strength", "s-pedt"), ("pedal_brake", "Brake pedal strength", "s-pedb")] {
         let mut v = get(s, key).as_f64().unwrap_or(1.0) as f32;
-        if ui.slider(id, c.row(), &mut v, 0.5, 2.0, 0.05, label, &|v| if (v - 1.0).abs() < 0.01 { "Normal".to_string() } else if v < 1.0 { format!("Softer x{v:.2}") } else { format!("Stronger x{v:.2}") }) {
+        if ui.slider(id, c.row(), &mut v, 0.5, 2.0, 0.05, label, &|v| if (v - 1.0).abs() < 0.01 { "Normal".to_string() } else if v < 1.0 { format!("{} x{v:.2}", omsi_ui::tr("Softer")) } else { format!("{} x{v:.2}", omsi_ui::tr("Stronger")) }) {
             s[key] = json!((v * 100.0).round() / 100.0);
             *dirty = 0.3;
         }
@@ -1702,7 +1702,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
             }
             for c in connected.iter().filter(|c| !devices.iter().any(|d| crate::controllers::names_match(&d.name, &c.name))) {
                 let r = Rect::new(v.x + 6.0, y, v.w - 12.0, 38.0);
-                if ui.button(&format!("pad-add-{}", c.name), r, &format!("Set up {}", c.name), Some("add"), ButtonKind::Primary) {
+                if ui.button(&format!("pad-add-{}", c.name), r, &format!("{} {}", omsi_ui::tr("Set up"), c.name), Some("add"), ButtonKind::Primary) {
                     add = Some(c.name.clone());
                 }
                 y += 44.0;
@@ -1746,9 +1746,9 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
         match save_gamectrler(devices) {
             Ok(p) => {
                 pv.dirty = false;
-                l.state.set_status(format!("Game controllers saved to {}", p.display()), false);
+                l.state.set_status(format!("{} {}", omsi_ui::tr("Game controllers saved to"), p.display()), false);
             }
-            Err(e) => l.state.set_status(format!("Not saved: {e}"), true),
+            Err(e) => l.state.set_status(format!("{}: {e}", omsi_ui::tr("Not saved")), true),
         }
     }
     // the device shown
@@ -1965,7 +1965,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
             pv.last_pressed = None;
             pv.confirm_remove = None;
             pv.dirty = true;
-            l.state.set_status(format!("{name} removed: press Save to keep it so."), false);
+            l.state.set_status(format!("Removed {name}: press Save to keep it so."), false);
         } else {
             pv.confirm_remove = Some(std::time::Instant::now());
         }
@@ -2352,7 +2352,7 @@ pub fn sessions(l: &mut Launcher, area: Rect) {
             } else {
                 "connecting...".to_string()
             };
-            l.ui.text_in(&format!("Multiplayer: {text}"), Rect::new(r.x + 42.0, yy, r.w - 60.0, 20.0), 12.5, Weight::Medium, if connected { OK } else { WARN }, Align::Left);
+            l.ui.text_in(&format!("{}: {}", omsi_ui::tr("Multiplayer"), omsi_ui::tr(&text)), Rect::new(r.x + 42.0, yy, r.w - 60.0, 20.0), 12.5, Weight::Medium, if connected { OK } else { WARN }, Align::Left);
             yy += 24.0;
         }
         if !players.is_empty() {
@@ -2507,7 +2507,7 @@ pub fn mods(l: &mut Launcher, area: Rect) {
         y += 30.0;
         y += l.ui.paragraph(&format!("Anything put into {} is installed by itself once it has finished copying.", m.inbox), Vec2::new(inner.x, y), inner.w, 12.0, Weight::Regular, TEXT_DIM);
         if !m.inbox_items.is_empty() {
-            l.ui.paragraph(&format!("In it now: {}", m.inbox_items.join(", ")), Vec2::new(inner.x, y + 4.0), inner.w, 12.0, Weight::Regular, TEXT_SOFT);
+            l.ui.paragraph(&format!("{}: {}", omsi_ui::tr("In it now"), m.inbox_items.join(", ")), Vec2::new(inner.x, y + 4.0), inner.w, 12.0, Weight::Regular, TEXT_SOFT);
         }
     }
     // installs
@@ -2604,7 +2604,7 @@ fn mod_list(l: &mut Launcher, c: Rect) {
     let mods = status.installed.clone();
     let on = mods.iter().filter(|m| m.enabled).count();
     // the content folder: where, how much room
-    l.ui.text_in(&format!("{} mods, {on} on | {} free", mods.len(), fmt_bytes(status.free_bytes)), Rect::new(c.x + 220.0, c.y + 14.0, c.w - 238.0, 28.0), 12.0, Weight::Regular, TEXT_DIM, Align::Right);
+    l.ui.text_in(&format!("Mods: {}, {on} on | {} free", mods.len(), fmt_bytes(status.free_bytes)), Rect::new(c.x + 220.0, c.y + 14.0, c.w - 238.0, 28.0), 12.0, Weight::Regular, TEXT_DIM, Align::Right);
     let mut y = inner.y;
     l.ui.text_in(&status.content_dir, Rect::new(inner.x, y, inner.w - 90.0, 18.0), 11.5, Weight::Regular, TEXT_FAINT, Align::Left);
     if l.ui.button("mods-open-folder", Rect::new(inner.right() - 80.0, y - 4.0, 80.0, 26.0), "Open", Some("open_in_new"), ButtonKind::Ghost) {
@@ -2789,7 +2789,7 @@ pub fn setup(l: &mut Launcher, area: Rect) {
         if !missing.is_empty() {
             let shown: Vec<&str> = missing.iter().map(String::as_str).take(6).collect();
             let more = if missing.len() > shown.len() { format!(" and {} more", missing.len() - shown.len()) } else { String::new() };
-            l.state.set_status(format!("Not saved: {chosen} is not a complete OMSI 2 installation - it lacks {}{more}", shown.join(", ")), true);
+            l.state.set_status(format!("Not saved: {chosen} is not a complete OMSI 2 installation - it lacks {}", format!("{}{more}", shown.join(", "))), true);
         } else {
             l.state.config.root = chosen.clone();
             l.state.config.game = game.trim().to_string();
@@ -2805,7 +2805,7 @@ pub fn setup(l: &mut Launcher, area: Rect) {
                     if same {
                         l.state.set_status("Saved. Reading the content again...", false);
                     } else {
-                        l.state.set_status(format!("Saved, but the OMSI 2 folder used is {}", l.state.config.root), true);
+                        l.state.set_status(format!("{} {}", omsi_ui::tr("Saved, but the OMSI 2 folder used is"), l.state.config.root), true);
                     }
                     // (a phone: the gallery is kept out of the folder chosen at once, before
                     // its media scanner lists its textures as photos, #1632)

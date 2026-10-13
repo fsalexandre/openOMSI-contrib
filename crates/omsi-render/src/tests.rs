@@ -400,6 +400,46 @@ fn a_mesh_page_hands_freed_space_to_the_next_mesh_and_joins_its_holes() {
     assert_eq!(page_take(&mut free, &mut top, 1000, 1001), None);
 }
 
+/// A dedicated server's renderer (wgpu's no-op device): its meshes take their place in the
+/// pages as on a GPU, with their bounds, but the pages hold no bytes of them.
+#[test]
+fn on_no_device_the_mesh_pages_hold_places_but_no_bytes() {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::NOOP;
+    descriptor.backend_options.noop = wgpu::NoopBackendOptions { enable: true };
+    let instance = wgpu::Instance::new(descriptor);
+    let renderer = pollster::block_on(Renderer::new_with(
+        &instance, None, Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+        RenderOptions { msaa: 1, shadow_size: 1024, ..Default::default() },
+    )).expect("no-op renderer");
+    let mut scene = renderer.new_scene();
+    let mesh = |n: usize, x: f32| {
+        let positions: Vec<Vec3> = (0..n).map(|i| Vec3::new(x + i as f32, 0.0, 0.0)).collect();
+        let indices: Vec<u32> = (0..n as u32 / 3 * 3).collect();
+        MeshData { normals: vec![Vec3::Z; n], uvs: vec![glam::Vec2::ZERO; n], ranges: vec![(0, indices.len() as u32, 0)], positions, indices, ..Default::default() }
+    };
+    let ids: Vec<MeshId> = (0..2000).map(|k| renderer.add_mesh(&mut scene, &mesh(300, k as f32))).collect();
+    let big = renderer.add_mesh(&mut scene, &mesh(400_000, 0.0));
+    let pages: Vec<PreparedMesh> = prepare_meshes(&renderer.device, &renderer.queue, &[&mesh(900, 0.0), &mesh(600, 0.0)], renderer.mesh_pages());
+    for m in pages {
+        renderer.add_prepared_mesh(&mut scene, m);
+    }
+    // every mesh in its own place, with its own bounds
+    let m0 = &scene.meshes[ids[0]];
+    let m1 = &scene.meshes[ids[1]];
+    assert!(m0.page != m1.page || m0.vertex_offset + m0.vertex_bytes <= m1.vertex_offset);
+    assert_eq!(m1.vertex_bytes, 300 * std::mem::size_of::<Vertex>() as u64);
+    assert!((m1.bounds_center.x - (1.0 + 149.5)).abs() < 1e-3);
+    // and the buffers a token: 2000 meshes of 300 vertices did not take 19 MB
+    assert!(scene.mesh_pages.iter().all(|p| p.vertex.size() == 32 && p.index.size() == 32));
+    assert_eq!(scene.meshes[big].vertex_buf.size(), 32);
+    // a freed mesh's place is taken by the next
+    let at = (scene.meshes[ids[5]].page, scene.meshes[ids[5]].vertex_offset);
+    renderer.free_mesh(&mut scene, ids[5]);
+    let again = renderer.add_mesh(&mut scene, &mesh(300, 0.0));
+    assert_eq!((scene.meshes[again].page, scene.meshes[again].vertex_offset), at);
+}
+
 #[test]
 #[ignore = "requires a graphics adapter; run with --ignored on a GPU host"]
 fn meshes_coming_and_going_tile_by_tile_keep_the_pages_from_growing() {

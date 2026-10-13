@@ -119,6 +119,7 @@ impl App {
         }
         self.service_msg = self.service_msg.take().filter(|(_, l)| *l > 0.0);
         self.integrations.update_watch.tick(&mut self.menus.notices);
+        crate::lan_mods::upload::notices(&mut self.menus.notices);
         for n in self.menus.notices.iter_mut() {
             n.left -= dt;
         }

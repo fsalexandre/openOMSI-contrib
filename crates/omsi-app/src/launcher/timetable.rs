@@ -232,8 +232,8 @@ pub fn draw(l: &mut Launcher, area: Rect) {
         if !tv.dirty.is_empty() {
             let (saved, err) = save_all(tv);
             match err {
-                Some(e) => l.state.set_status(format!("Not saved: {e}"), true),
-                None => l.state.set_status(format!("{saved} line(s) saved"), false),
+                Some(e) => l.state.set_status(format!("{}: {e}", omsi_ui::tr("Not saved")), true),
+                None => l.state.set_status(format!("Saved {saved} line(s)"), false),
             }
         }
         tv.map = m;
@@ -295,7 +295,7 @@ pub fn draw(l: &mut Launcher, area: Rect) {
             }
             let star = if dirty.contains(name) { " •" } else { "" };
             ui.text_in(&format!("{name}{star}"), Rect::new(r.x + 12.0, r.y, r.w - 90.0, r.h), 13.0, Weight::Medium, TEXT, Align::Left);
-            ui.text_in(&format!("{tours} tours"), Rect::new(r.right() - 90.0, r.y, 80.0, r.h), 11.5, Weight::Regular, TEXT_DIM, Align::Right);
+            ui.text_in(&format!("{tours} {}", omsi_ui::tr("tours")), Rect::new(r.right() - 90.0, r.y, 80.0, r.h), 11.5, Weight::Regular, TEXT_DIM, Align::Right);
         }
         lines.len() as f32 * 42.0
     });
@@ -331,7 +331,7 @@ pub fn draw(l: &mut Launcher, area: Rect) {
 
     // --- its tours
     ui.panel(mid);
-    let inner = ui.heading(Rect::new(mid.x + 18.0, mid.y + 14.0, mid.w - 36.0, mid.h - 28.0), &format!("Line {line_name}"), Some("directions_bus"));
+    let inner = ui.heading(Rect::new(mid.x + 18.0, mid.y + 14.0, mid.w - 36.0, mid.h - 28.0), &format!("{} {line_name}", omsi_ui::tr("Line")), Some("directions_bus"));
     let mut pick_tour = None;
     let tours: Vec<(String, String, usize)> = line.tours.iter().map(|t| (t.number.clone(), t.trips.first().map(|x| fmt_time(x.departure)).unwrap_or_default(), t.trips.len())).collect();
     let sel_tour = tv.tour;
@@ -342,7 +342,7 @@ pub fn draw(l: &mut Launcher, area: Rect) {
             if ui.row(&format!("tt-tour-{i}"), r, i == sel_tour) {
                 pick_tour = Some(i);
             }
-            ui.text_in(&format!("Tour {num}"), Rect::new(r.x + 12.0, r.y, r.w - 100.0, r.h), 13.0, Weight::Medium, TEXT, Align::Left);
+            ui.text_in(&format!("{} {num}", omsi_ui::tr("Tour")), Rect::new(r.x + 12.0, r.y, r.w - 100.0, r.h), 13.0, Weight::Medium, TEXT, Align::Left);
             ui.text_in(&format!("{first} | {n}"), Rect::new(r.right() - 100.0, r.y, 90.0, r.h), 11.5, Weight::Regular, TEXT_DIM, Align::Right);
         }
         tours.len() as f32 * 42.0
@@ -412,7 +412,7 @@ pub fn draw(l: &mut Launcher, area: Rect) {
         }
         return;
     };
-    let inner = ui.heading(Rect::new(right.x + 18.0, right.y + 14.0, right.w - 36.0, right.h - 28.0), &format!("Tour {} - {}", tour.number, tour.ai_group), Some("schedule"));
+    let inner = ui.heading(Rect::new(right.x + 18.0, right.y + 14.0, right.w - 36.0, right.h - 28.0), &format!("{} {} - {}", omsi_ui::tr("Tour"), tour.number, tour.ai_group), Some("schedule"));
     if tv.times_for != Some((tv.line, tv.tour)) || tv.times.len() != tour.trips.len() {
         tv.times = tour.trips.iter().map(|t| fmt_time(t.departure)).collect();
         tv.times_for = Some((tv.line, tv.tour));
@@ -513,7 +513,7 @@ pub fn draw(l: &mut Launcher, area: Rect) {
             tv.times_for = None;
             status = Some(match err {
                 Some(e) => (format!("Not saved: {e}"), true),
-                None => (format!("{saved} line(s) saved"), false),
+                None => (format!("Saved {saved} line(s)"), false),
             });
         }
     }

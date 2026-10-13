@@ -14,3 +14,8 @@ node_modules/
 /android/debug.keystore
 /android/build
 tools/greenteaspeak-plugin/*.zip
+
+# local Docker server: the player's own settings
+docker/server/config/
+docker/server/.env
+docker/server/content/

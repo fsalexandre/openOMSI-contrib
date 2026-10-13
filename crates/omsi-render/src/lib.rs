@@ -1480,7 +1480,7 @@ impl Scene {
 
     /// Bytes the meshes' pages take on the GPU, each page once, whatever share of it is in use.
     pub fn mesh_page_bytes(&self) -> u64 {
-        let shared: u64 = self.mesh_pages.iter().map(|p| p.vertex.size() + p.index.size()).sum();
+        let shared: u64 = self.mesh_pages.iter().map(|p| p.vertex_cap + p.index_cap).sum();
         // (a set: without base vertices every mesh has buffers of its own, thousands of them)
         let mut own: std::collections::HashSet<&wgpu::Buffer> = std::collections::HashSet::new();
         for m in self.meshes.iter().filter(|m| m.page == u32::MAX && !m.ranges.is_empty()) {
@@ -3447,6 +3447,9 @@ impl Renderer {
     /// creation failed validation and mapping it panicked (Windows, Vulkan).
     fn flush_pending_meshes(&self, scene: &Scene, _encoder: &mut wgpu::CommandEncoder) {
         let pending = std::mem::take(&mut *self.pending_meshes.borrow_mut());
+        if pending.is_empty() || no_device(&self.device) {
+            return;
+        }
         if let Some(rt) = self.rt.as_ref() {
             rt.meshes_changed(pending.iter().map(|(id, _)| *id));
         }
@@ -7503,11 +7506,24 @@ fn buffer_init(device: &wgpu::Device, queue: &wgpu::Queue, label: Option<&str>, 
 /// device with ray queries: their buffers are its geometry input).
 static RT_BUFFERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Is `device` wgpu's no-op device (a dedicated server, which draws nothing)? Meshes take
+/// their place in the pages there, but their bytes are not written: that device keeps every
+/// buffer in memory, a second copy of every mesh of the map that nothing ever reads (1.9 of
+/// a server's 2.7 GB on a big map).
+fn no_device(device: &wgpu::Device) -> bool {
+    device.adapter_info().backend == wgpu::Backend::Noop
+}
+
 /// Vertex and index buffers holding several meshes; the space a freed mesh leaves is
 /// handed to the next that fits.
 struct MeshPage {
     vertex: wgpu::Buffer,
     index: wgpu::Buffer,
+    /// The pages' room (their buffers' sizes, but on no device: those are a token there).
+    vertex_cap: u64,
+    index_cap: u64,
+    /// On a real device: the meshes' bytes are written (see [`no_device`]).
+    real: bool,
     vertex_top: u64,
     index_top: u64,
     vertex_free: Vec<(u64, u64)>,
@@ -7563,10 +7579,14 @@ fn page_give(free: &mut Vec<(u64, u64)>, top: &mut u64, at: u64, len: u64) {
 impl MeshPage {
     fn new(device: &wgpu::Device, vertex_bytes: u64, index_bytes: u64) -> MeshPage {
         let blas = if RT_BUFFERS.load(std::sync::atomic::Ordering::Relaxed) { wgpu::BufferUsages::BLAS_INPUT } else { wgpu::BufferUsages::empty() };
-        let buffer = |size: u64, usage| device.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh page"), size: size.max(32), usage: usage | wgpu::BufferUsages::COPY_DST | blas, mapped_at_creation: false });
+        let real = !no_device(device);
+        let buffer = |size: u64, usage| device.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh page"), size: if real { size.max(32) } else { 32 }, usage: usage | wgpu::BufferUsages::COPY_DST | blas, mapped_at_creation: false });
         MeshPage {
             vertex: buffer(vertex_bytes, wgpu::BufferUsages::VERTEX),
             index: buffer(index_bytes, wgpu::BufferUsages::INDEX),
+            vertex_cap: vertex_bytes.max(32),
+            index_cap: index_bytes.max(32),
+            real,
             vertex_top: 0,
             index_top: 0,
             vertex_free: Vec::new(),
@@ -7576,8 +7596,8 @@ impl MeshPage {
 
     /// Room for a mesh of these sizes: its vertex and index offsets.
     fn take(&mut self, vertex_bytes: u64, index_bytes: u64) -> Option<(u64, u64)> {
-        let v = page_take(&mut self.vertex_free, &mut self.vertex_top, self.vertex.size(), vertex_bytes)?;
-        match page_take(&mut self.index_free, &mut self.index_top, self.index.size(), index_bytes) {
+        let v = page_take(&mut self.vertex_free, &mut self.vertex_top, self.vertex_cap, vertex_bytes)?;
+        match page_take(&mut self.index_free, &mut self.index_top, self.index_cap, index_bytes) {
             Some(i) => Some((v, i)),
             None => {
                 page_give(&mut self.vertex_free, &mut self.vertex_top, v, vertex_bytes);
@@ -7595,10 +7615,10 @@ impl MeshPage {
     fn place(&self, queue: &wgpu::Queue, data: &MeshData, page: u32, at: (u64, u64)) -> GpuMesh {
         let verts = mesh_vertices(data);
         let (vb, ib): (&[u8], &[u8]) = (bytemuck::cast_slice(&verts), bytemuck::cast_slice(&data.indices));
-        if !vb.is_empty() {
+        if !vb.is_empty() && self.real {
             queue.write_buffer(&self.vertex, at.0, vb);
         }
-        if !ib.is_empty() {
+        if !ib.is_empty() && self.real {
             queue.write_buffer(&self.index, at.1, ib);
         }
         let (center, radius) = mesh_bounds(data);

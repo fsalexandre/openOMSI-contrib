@@ -708,7 +708,15 @@ impl App {
     /// of the world once it is there. Returns false while the loading screen is up.
     pub(crate) fn drive_start(&mut self, event_loop: &ActiveEventLoop) -> bool {
         let Some(cam) = self.cam.starting.take() else {
-            return true;
+            // a joining player's bus goes to a server that lacks it before the drive starts,
+            // so the others see it from its first metre (`lan_mods::upload`)
+            let Some((caption, progress)) = crate::lan_mods::upload::loading() else {
+                return true;
+            };
+            if let (Some(renderer), Some(scene)) = (self.renderer.take(), self.scene.take()) {
+                self.loading_frame(renderer, scene, "Getting your bus to the server", &caption, progress);
+            }
+            return false;
         };
         let (Some(renderer), Some(mut scene)) = (self.renderer.take(), self.scene.take()) else {
             self.cam.starting = Some(cam);
@@ -738,7 +746,10 @@ impl App {
             self.start_world(w, cam, &renderer, &mut scene);
             self.renderer = Some(renderer);
             self.scene = Some(scene);
-            return true;
+            if let Some(p) = self.player.as_ref() {
+                crate::lan_mods::upload::begin(&self.args.root, &crate::lan::content_relative(&p.vehicle.ty.def.path, &self.args.root), &crate::lan::current_paint(&self.args, &p.vehicle), crate::lan_mods::upload::own_files(&self.args.root, p));
+            }
+            return crate::lan_mods::upload::loading().is_none();
         };
         let name = self
             .world
@@ -751,6 +762,20 @@ impl App {
                 }
             })
             .unwrap_or_default();
+        self.loading_frame(renderer, scene, name.trim(), "", done as f32 / total.max(1) as f32);
+        self.cam.starting = Some(cam);
+        if let Some(limit) = self.args.exit_after {
+            if self.started.elapsed().as_secs_f32() > limit {
+                log::info!("exit after {limit} s while loading: {done} of {total} tiles");
+                crate::platform::exit(event_loop);
+            }
+        }
+        false
+    }
+
+    /// One picture of the loading screen (the map's first area, or a joining player's bus
+    /// going to the server): `title`, a bar at `progress` and the line `caption` under it.
+    fn loading_frame(&mut self, renderer: omsi_render::Renderer, mut scene: Scene, title: &str, caption: &str, progress: f32) {
         let mut reconfigure = false;
         if let (Some(ui), Some(s), Some(win)) = (
             self.ui.as_mut(),
@@ -766,9 +791,9 @@ impl App {
                 s.config.width as f32,
                 s.config.height as f32,
                 scale,
-                name.trim(),
-                "",
-                done as f32 / total.max(1) as f32,
+                title,
+                caption,
+                progress,
             );
             let acquired = s.acquire();
             // a swapchain that no longer fits the window (Vulkan says so after the switch
@@ -820,14 +845,6 @@ impl App {
             }
         }
         self.scene = Some(scene);
-        self.cam.starting = Some(cam);
-        if let Some(limit) = self.args.exit_after {
-            if self.started.elapsed().as_secs_f32() > limit {
-                log::info!("exit after {limit} s while loading: {done} of {total} tiles");
-                crate::platform::exit(event_loop);
-            }
-        }
-        false
     }
 
     /// Stream the tiles around the camera and the player's bus (whose ground must stay when

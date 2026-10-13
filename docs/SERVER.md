@@ -78,6 +78,54 @@ The same gateway and tunnel open for a player hosting by **code** (Connect by Co
 address goes to the rendezvous topic, and a joining game that gets no answer from the
 addresses in the code (routers that cannot be punched through) joins through the tunnel.
 
+## Players' buses (`accept_uploads`)
+
+With `accept_uploads = 1` (the default) a player may drive a bus the server does not have:
+the player's game sends the server the files that bus uses, the server keeps them and passes
+them on to every other player, so nobody sees a stand-in.
+
+* **What goes:** only what the player's game actually read for that bus - the variant and the
+  paint driven, the shared folders its files point into (`..\..\Anzeigen`, shared sounds) and
+  the fonts its displays write with - not the whole pack. Stock OMSI 2 content and files that
+  came from the server never go. Programs, libraries and plugins are refused by name and by
+  content, as for the server's own mods.
+* **When:** a joining player sends it under the loading screen ("Getting your bus to the
+  server", with the progress), so the others see the real bus from its first metre; after
+  three minutes the loading screen lets go and the rest goes on in the background, shown as a
+  card over the HUD. A bus or paint changed in the game is sent the same way.
+* **The others:** every player's game says which bus it drives by its fingerprint (the
+  hash over the list of its files). A game that draws that player uses its own copy when it
+  is the same bus file for file, and else asks the server for that bus by its fingerprint
+  ("Downloading another player's bus: 40%") - never another version that has the same path
+  here. Joining downloads the map and the server's own mods only; the buses of the players
+  who are there come this way, the moment their players are drawn (a bus still on its way to
+  the server is waited for: the server answers the moment it has come). At most three buses
+  download at once.
+* **How it goes:** both ways in pieces of 1 MiB (a small file is one piece), each compressed
+  when that makes it smaller (uncompressed `.tga`/`.bmp` textures go at a few percent of their
+  size; `.dds`/`.png` hardly shrink), over four connections at once. Every piece is kept
+  sealed the moment it comes, so a transfer that breaks off goes on where it stopped, whatever
+  the size of the file, and loses at most the pieces on their way. A file counts only once
+  all its pieces are here and its SHA-256 is the one its list names, and it has passed the
+  checks of what it is; a bus is drawn only once every file of its list is here. Anything
+  else - a piece changed on the way, a file that is not what its list says - is thrown away
+  and fetched again, never drawn. A game or server of a version before the pieces sends and
+  takes whole files, as before.
+* **On the server:** taken without asking and with no size limit, and kept by its content:
+  every file sealed once in `~/.openomsi/lan-store` by its SHA-256 (a file several buses share
+  is kept and sent once), every bus as its list of files in `lan-store/vehicles/<fingerprint>.json`
+  - the fingerprint the server works out itself from what it checked. Two players with two
+  versions of the same mod are two buses, both kept, neither in the place of the other; the
+  server draws each player's bus in the version that player has. Still there after a restart.
+  A bus nobody drives is kept `uploads_keep_days` (30 by default) after it was last used; when
+  the disk runs short for a file being sent, the buses nobody drives now go first, the least
+  lately used first, until it fits - no bus is ever refused for its size, only when even then
+  the disk cannot hold it. A bus being sent, and every file of it, is never let go meanwhile.
+  To forget a bus by hand, stop the server and delete its `.json`.
+* With `vehicles` empty the server then offers any bus (the launcher no longer limits the
+  choice to the server's own buses); with a `vehicles` list only those buses are taken.
+* `accept_uploads = 0` switches it off; a player's game hosting a session never takes uploads.
+
 What is still to come from the plan below: a world without the renderer's data structures
 (the server keeps the tiles' meshes in memory for nothing), tiles streamed by the players'
 interest (today `radius = 0` loads the whole map), a password, admin commands.

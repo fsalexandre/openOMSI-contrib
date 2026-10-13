@@ -48,6 +48,14 @@ pub(crate) struct ServerCfg {
     pub vehicles: Vec<String>,
     /// `GET /players` on the web port tells who drives what and where (for a web map).
     pub share_positions: bool,
+    /// A player whose bus the server lacks sends it, and the server passes it on to the
+    /// others (`lan_mods::upload`).
+    pub accept_uploads: bool,
+    /// Days a bus players sent is kept when nobody uses it (`lan_mods::vehicles::collect`).
+    pub uploads_keep_days: u64,
+    /// The map (and what it uses) goes to players who join without it (`lan_mods`); off,
+    /// they install it themselves - the server's line is kept for the players' buses.
+    pub share_maps: bool,
     /// The GreenTeaSpeak server and channel the players talk in (`voice`).
     pub voice: Option<crate::voice::VoiceServer>,
 }
@@ -111,6 +119,21 @@ vehicles =
 # positions - for a live map of the server on a website; tell your players when it is on
 share_positions = 0
 
+# a player whose bus this server does not have sends it the files that bus uses (the variant
+# and paint driven, not the whole pack); the server keeps them and passes them on to every
+# other player, so nobody sees a stand-in. Taken without asking and kept after a restart
+# (in ~/.openomsi/lan-store). With it on and vehicles empty, the players may choose any bus.
+# 1 = on, 0 = off
+accept_uploads = 1
+# days a bus players sent is kept when nobody drives it; when the disk runs short, the buses
+# nobody drives now go first, the least lately used first (no bus is refused for its size)
+uploads_keep_days = 30
+# a player who joins without the server's map gets it from the server (the map and the
+# objects, splines and vehicles it uses - gigabytes for a big map). Off: players install the
+# map themselves and are told which one is missing; the server's bandwidth goes to the
+# players' buses. 1 = on, 0 = off
+share_maps = 0
+
 # voice chat: the players hear each other where they stand, through GreenTeaSpeak and its
 # openOMSI plugin (as SaltyChat does for FiveM). voice_server_uid is the voice server's unique
 # id (its info panel; needed: without it there is no voice chat), voice_channel the in-game
@@ -169,6 +192,9 @@ impl ServerCfg {
             metar_station: kv.get("metar_station").map(|v| v.chars().filter(|c| c.is_ascii_alphabetic()).take(4).collect::<String>().to_ascii_uppercase()).unwrap_or_default(),
             vehicles: kv.get("vehicles").map(|v| v.split(';').map(|x| x.trim().replace('\\', "/")).filter(|x| !x.is_empty()).collect()).unwrap_or_default(),
             share_positions: flag("share_positions", false),
+            accept_uploads: flag("accept_uploads", true),
+            uploads_keep_days: num("uploads_keep_days", 30).clamp(1, 3650) as u64,
+            share_maps: flag("share_maps", false),
             voice: crate::voice::VoiceServer::from_kv(|k| kv.get(k).cloned()),
         })
     }
@@ -204,6 +230,9 @@ pub(crate) fn prepare(args: &mut Args, path: &Path) -> Result<ServerCfg> {
     let _ = SERVER_ADMIN.set((cfg.admin_password.clone(), if cfg.real_time { 1.0 } else { cfg.time_speed }));
     crate::real_time::set_server_real(cfg.real_time);
     let _ = SERVER_VEHICLES.set(cfg.vehicles.clone());
+    crate::lan_mods::upload::accept(cfg.accept_uploads);
+    crate::lan_mods::vehicles::keep_for_days(cfg.uploads_keep_days);
+    crate::lan_mods::share_maps(cfg.share_maps);
     let _ = SERVER_VOICE.set(cfg.voice.clone());
     args.map = cfg.map.clone();
     args.time = cfg.time.clone();

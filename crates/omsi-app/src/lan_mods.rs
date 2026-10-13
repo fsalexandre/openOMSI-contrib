@@ -34,8 +34,15 @@
 //! touches nothing outside the vehicle. No plugin is ever loaded from the session folder
 //! (`omsi_cfg::mark_sandbox`).
 
+mod bus_files;
 mod channel;
+pub(crate) mod identity;
+pub(crate) mod placeholder;
+mod pieces;
+mod quarantine;
 mod store;
+pub(crate) mod vehicles;
+pub(crate) mod upload;
 
 use crate::Args;
 use channel::{SecureReader, SecureWriter};
@@ -57,7 +64,7 @@ const KEEP_FREE: u64 = 3 << 30;
 const MAX_FILES: usize = 400_000;
 
 /// The top-level content folders a session may bring files into.
-const FOLDERS: &[&str] = &["maps", "vehicles", "sceneryobjects", "splines", "humans", "fonts", "ticketpacks", "money", "weather", "texture", "sound", "sounds", "trains", "announcements"];
+const FOLDERS: &[&str] = &["maps", "vehicles", "sceneryobjects", "splines", "humans", "fonts", "ticketpacks", "money", "weather", "texture", "sound", "sounds", "trains", "announcements", "scripts"];
 
 /// Names that run code somewhere (Windows, macOS, Linux, the JVM, Office macros, OMSI
 /// plugins and their configuration).
@@ -67,7 +74,7 @@ const REFUSED: &[&str] = &[
 
 /// One file of the list: path relative to a content root (`/`-separated, as the host
 /// spells it), its size and SHA-256 (hex).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
     pub path: String,
     pub size: u64,
@@ -154,7 +161,34 @@ fn is_original(r: &Path, original: &Path) -> bool {
 /// from (a folder or a mounted archive).
 fn collect(args: &Args) -> (Manifest, Vec<PathBuf>) {
     let t0 = Instant::now();
-    let original = args.root.clone();
+    let (list, _) = session_files(&args.map, args.bus.as_deref(), args.weather.as_deref(), Some(&args.root));
+    // (read in parallel, and the hashes remembered by size and time: a map of thousands of
+    // files - put on a server through a slow shared folder - is read once, not at each start)
+    let entries = upload::hashed(&list);
+    let by_rel: HashMap<&str, &PathBuf> = list.iter().map(|(r, p)| (r.as_str(), p)).collect();
+    let sources: Vec<PathBuf> = entries.iter().filter_map(|e| by_rel.get(e.path.as_str()).map(|p| (*p).clone())).collect();
+    let total: u64 = entries.iter().map(|e| e.size).sum();
+    log::info!(
+        "LAN mods: {} files ({:.1} MB) of this session are not stock content and go to joining players (listed in {:.1} s)",
+        entries.len(),
+        total as f64 / 1e6,
+        t0.elapsed().as_secs_f64()
+    );
+    (
+        Manifest { map: args.map.replace('\\', "/"), bus: args.bus.clone().unwrap_or_default().replace('\\', "/"), entries },
+        sources,
+    )
+}
+
+/// The files a session on `map` (driving `bus`, in `weather`) uses - the map's folder, the
+/// objects, splines, vehicles and people its files name and the folders those name in turn,
+/// its ground pictures, the fonts its displays write with - as (relative path, where it is
+/// read from), and what its files name that is nowhere here. Those of the content root
+/// `original` (the OMSI 2 installation, found on every machine) are left out; with none,
+/// everything the map needs is in (`map_pack`: a server without this installation).
+pub(crate) fn session_files(map: &str, bus: Option<&str>, weather: Option<&str>, original: Option<&Path>) -> (Vec<(String, PathBuf)>, Vec<String>) {
+    let original = original.map(Path::to_path_buf);
+    let mut missing: Vec<String> = Vec::new();
     // (lower-case relative path) -> (spelling, source)
     let mut files: HashMap<String, (String, PathBuf)> = HashMap::new();
     let mut folders_done: HashSet<String> = HashSet::new();
@@ -174,7 +208,7 @@ fn collect(args: &Args) -> (Manifest, Vec<PathBuf>) {
     };
     // a folder (relative) and everything in it, from the content roots that are not the
     // original installation (a mod's copy of a stock folder brings only what it adds)
-    fn add_folder(rel: &str, original: &Path, files: &mut HashMap<String, (String, PathBuf)>, text_todo: &mut Vec<(String, PathBuf)>, depth: usize) {
+    fn add_folder(rel: &str, original: Option<&Path>, files: &mut HashMap<String, (String, PathBuf)>, text_todo: &mut Vec<(String, PathBuf)>, depth: usize) {
         if depth > 12 {
             return;
         }
@@ -182,7 +216,7 @@ fn collect(args: &Args) -> (Manifest, Vec<PathBuf>) {
         let comps = omsi_cfg::windows_components(rel);
         let mut seen: HashSet<String> = HashSet::new();
         for r in roots {
-            if is_original(&r, original) {
+            if original.is_some_and(|o| is_original(&r, o)) {
                 continue;
             }
             let dir = comps.iter().fold(r.clone(), |p, c| p.join(c));
@@ -206,7 +240,7 @@ fn collect(args: &Args) -> (Manifest, Vec<PathBuf>) {
                         continue;
                     }
                     if let Some((root, path)) = omsi_cfg::find_in_roots(&child) {
-                        if is_original(&root, original) {
+                        if original.is_some_and(|o| is_original(&root, o)) {
                             continue;
                         }
                         let lower = name.to_lowercase();
@@ -235,22 +269,22 @@ fn collect(args: &Args) -> (Manifest, Vec<PathBuf>) {
     };
     let mut want_folder = |rel: String, files: &mut HashMap<String, (String, PathBuf)>, text_todo: &mut Vec<(String, PathBuf)>| {
         if folders_done.insert(rel.to_lowercase()) {
-            add_folder(&rel, &original, files, text_todo, 0);
+            add_folder(&rel, original.as_deref(), files, text_todo, 0);
         }
     };
-    let map_dir = norm(Path::new(&args.map).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default().as_str());
+    let map_dir = norm(Path::new(map).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default().as_str());
     if !map_dir.is_empty() {
         want_folder(map_dir.clone(), &mut files, &mut text_todo);
     }
-    if let Some(b) = args.bus.as_deref() {
+    if let Some(b) = bus {
         if let Some(f) = owner_folder(&norm(b)) {
             want_folder(f, &mut files, &mut text_todo);
         }
     }
-    if let Some(w) = args.weather.as_deref() {
+    if let Some(w) = weather {
         let w = norm(w);
         if let Some((root, path)) = omsi_cfg::find_in_roots(&w) {
-            if root != original {
+            if original.as_ref() != Some(&root) {
                 files.insert(w.to_lowercase(), (w, path));
             }
         }
@@ -304,11 +338,16 @@ fn collect(args: &Args) -> (Manifest, Vec<PathBuf>) {
                 // a picture named from the root: a map's ground textures (`[groundtex]` of its
                 // global.cfg: `Texture\<map>\gras.jpg`) - without them its ground was white
                 let picture = [".bmp", ".jpg", ".jpeg", ".dds", ".tga", ".png"].iter().any(|e| lower.ends_with(e));
-                if !is_ref && !relative && !picture {
+                // a script named from the root (`Scripts\AI_Cars\x.osc` of a parked car):
+                // its folder, with the variable lists beside it - else the server's traffic
+                // ran without it
+                let script = lower.ends_with(".osc") || (lower.starts_with("scripts") && lower.ends_with(".txt"));
+                if !is_ref && !relative && !picture && !script {
                     continue;
                 }
                 // a path from the root ("Sceneryobjects\\...") or from this file's folder
                 let candidates = [norm(t), norm(&format!("{here}/{t}"))];
+                let mut found = false;
                 for c in candidates {
                     if c.split('/').count() < 2 {
                         continue;
@@ -318,14 +357,15 @@ fn collect(args: &Args) -> (Manifest, Vec<PathBuf>) {
                         continue;
                     }
                     let Some((root, _)) = omsi_cfg::find_in_roots(&c) else { continue };
-                    if is_original(&root, &original) {
+                    found = true;
+                    if original.as_ref().is_some_and(|o| is_original(&root, o)) {
                         break;
                     }
                     let folder = if is_ref { owner_folder(&c) } else { c.rsplit_once('/').map(|(d, _)| d.to_string()) };
                     match folder.filter(|f| f.split('/').count() >= 2) {
                         Some(f) => want_folder(f, &mut files, &mut next),
                         // (one right in a content folder, `Texture\x.bmp`: that file alone)
-                        None if picture => {
+                        None if picture || script => {
                             if let Some((_, path)) = omsi_cfg::find_in_roots(&c) {
                                 files.entry(c.to_lowercase()).or_insert((c.clone(), path));
                             }
@@ -334,6 +374,10 @@ fn collect(args: &Args) -> (Manifest, Vec<PathBuf>) {
                     }
                     break;
                 }
+                // (a name that is a path into a content folder, found nowhere: missing here)
+                if !found && (is_ref || picture || script) && FOLDERS.contains(&norm(t).split('/').next().unwrap_or("").to_ascii_lowercase().as_str()) {
+                    missing.push(format!("{} (named in {rel})", norm(t)));
+                }
             }
         }
         queue = next;
@@ -341,7 +385,7 @@ fn collect(args: &Args) -> (Manifest, Vec<PathBuf>) {
     // the mod fonts those text textures use (OMSI reads the `.oft` files of `Fonts` itself,
     // not its sub-folders): each `.oft` with a `[newfont]` of a name in use, and its bitmaps
     for r in omsi_cfg::content_roots() {
-        if is_original(&r, &original) {
+        if original.as_ref().is_some_and(|o| is_original(&r, o)) {
             continue;
         }
         let Some(dir) = omsi_cfg::find_in_roots("Fonts").filter(|(root, _)| *root == r).map(|(_, p)| p).or_else(|| Some(r.join("Fonts"))) else { continue };
@@ -369,7 +413,7 @@ fn collect(args: &Args) -> (Manifest, Vec<PathBuf>) {
             for f in std::iter::once(n.clone()).chain(bitmaps) {
                 let rel = format!("Fonts/{f}");
                 if let Some((root, path)) = omsi_cfg::find_in_roots(&rel) {
-                    if !is_original(&root, &original) {
+                    if !original.as_ref().is_some_and(|o| is_original(&root, o)) {
                         files.insert(rel.to_lowercase(), (rel, path));
                     }
                 }
@@ -378,28 +422,17 @@ fn collect(args: &Args) -> (Manifest, Vec<PathBuf>) {
     }
     let mut list: Vec<(String, PathBuf)> = files.into_values().filter(|(rel, _)| refuse_path(rel).is_none()).collect();
     list.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut entries = Vec::with_capacity(list.len());
-    let mut sources = Vec::with_capacity(list.len());
-    let mut total = 0u64;
-    for (rel, path) in list {
-        let Ok(data) = omsi_cfg::vfs::read(&path) else { continue };
-        if data.len() as u64 > MAX_FILE || looks_executable(&data[..data.len().min(8)]) {
-            continue;
-        }
-        total += data.len() as u64;
-        entries.push(Entry { path: rel, size: data.len() as u64, sha256: sha256_of(&data) });
-        sources.push(path);
-    }
-    log::info!(
-        "LAN mods: {} files ({:.1} MB) of this session are not stock content and go to joining players (listed in {:.1} s)",
-        entries.len(),
-        total as f64 / 1e6,
-        t0.elapsed().as_secs_f64()
-    );
-    (
-        Manifest { map: args.map.replace('\\', "/"), bus: args.bus.clone().unwrap_or_default().replace('\\', "/"), entries },
-        sources,
-    )
+    missing.sort();
+    missing.dedup();
+    (list, missing)
+}
+
+/// Whether the map goes to players who join without it (`share_maps` of a server; a game
+/// that hosts a session shares it).
+static SHARE_MAPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub(crate) fn share_maps(on: bool) {
+    SHARE_MAPS.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Serve the session's mods on TCP `port` (a thread; the list is made in the background).
@@ -415,13 +448,22 @@ pub fn serve(port: u16, session: u64, args: &Args) {
         }
     };
     let ready: Arc<Mutex<Option<Arc<(Manifest, Vec<PathBuf>)>>>> = Arc::new(Mutex::new(None));
+    // (a server that takes its players' buses opens those sent before: they are asked for by
+    // their fingerprint when their players are there, not put on everybody's list)
+    upload::open();
     {
         let ready = ready.clone();
         let args = args.clone();
         std::thread::Builder::new()
             .name("lan-mods-list".into())
             .spawn(move || {
-                let m = collect(&args);
+                // (no map passed on: an empty list, and no reading through it at the start)
+                let m = if SHARE_MAPS.load(std::sync::atomic::Ordering::Relaxed) {
+                    collect(&args)
+                } else {
+                    log::info!("LAN mods: the map is not passed on (share_maps = 0): players who join need {} installed", args.map);
+                    (Manifest { map: args.map.replace('\\', "/"), bus: String::new(), entries: Vec::new() }, Vec::new())
+                };
                 *ready.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(m));
             })
             .ok();
@@ -435,7 +477,11 @@ pub fn serve(port: u16, session: u64, args: &Args) {
             for conn in listener.incoming() {
                 let Ok(stream) = conn else { continue };
                 if open.load(std::sync::atomic::Ordering::Relaxed) >= MAX_CONNECTIONS {
-                    log::info!("LAN mods: {MAX_CONNECTIONS} connections open already; one more closed");
+                    log::info!("LAN mods: {MAX_CONNECTIONS} connections open already; one more told to come back");
+                    // (said, not just closed: the player's game asks again in a moment instead
+                    // of taking the bus for one not to be had)
+                    let mut s = stream;
+                    let _ = s.write_all(b"ERR busy\n");
                     continue;
                 }
                 open.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -455,8 +501,16 @@ pub fn serve(port: u16, session: u64, args: &Args) {
         .ok();
 }
 
-/// Connections the mods server serves at once.
-const MAX_CONNECTIONS: usize = 16;
+/// Connections the mods server serves at once (players fetch and send buses over several
+/// each; one more is answered `ERR busy` and comes back). A new bus among 16 players: the
+/// 15 others each wait for its list and then fetch it over four connections, while its
+/// player sends it and fetches theirs - about 90 at once, where 50 sent half of them away.
+/// As many as the web gateway carries (`omsi_net::ws`), whose mod streams all end here.
+const MAX_CONNECTIONS: usize = 160;
+
+/// What an attempt that broke off on the way says (the system's own words follow, in the
+/// player's language): asked again in a moment, never given up.
+pub(crate) const CONNECTION_LOST: &str = "connection lost";
 /// The longest request line (they are a few words).
 const MAX_LINE: u64 = 256;
 
@@ -504,6 +558,9 @@ fn handle(stream: TcpStream, session: u64, ready: &Mutex<Option<Arc<(Manifest, V
     let (send, receive) = keys.finish(session, false, hello[2])?;
     let mut out = SecureWriter::new(out, send);
     let mut input = SecureReader::new(input, receive);
+    let mut incoming = upload::Incoming::default();
+    // (pieces go packed with zstd to a game that says it reads them: `pieces`)
+    let mut zstd = false;
     loop {
         // (what was answered goes out before the next request is waited for)
         out.flush()?;
@@ -548,6 +605,21 @@ fn handle(stream: TcpStream, session: u64, ready: &Mutex<Option<Arc<(Manifest, V
                     }
                 }
             }
+            // a player's bus for the session (see `upload`)
+            ["OFFER", len] => incoming.offer(&mut input, &mut out, len)?,
+            ["PUT", idx, len] => incoming.put(&mut input, &mut out, idx, len)?,
+            // the same in pieces, each kept as it comes (see `pieces`)
+            ["OFFER2", len] => incoming.offer_pieces(&mut input, &mut out, len)?,
+            ["PUTPIECE", idx, i, raw, codec, wire] => incoming.put_piece(&mut input, &mut out, idx, i, &format!("{raw} {codec} {wire}"))?,
+            ["ZSTD"] => {
+                zstd = true;
+                writeln!(out, "OK")?;
+            }
+            ["PIECE", sha, i] => upload::send_piece(&mut out, sha, i, zstd)?,
+            ["DONE"] => incoming.done(&mut out)?,
+            // a bus by its content, and one of its files (see `vehicles`)
+            ["MANIFEST", fp] => upload::send_manifest(&mut out, fp)?,
+            ["BLOB", sha] => upload::send_blob(&mut out, sha)?,
             ["BYE"] | [] => return out.flush(),
             _ => writeln!(out, "ERR what")?,
         }
@@ -612,20 +684,9 @@ pub fn clean_up() {
     }
 }
 
-#[cfg(unix)]
+/// Free room on the disk `dir` is on (Windows too).
 fn free_space(dir: &Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
-    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
-        return None;
-    }
-    Some(st.f_bavail as u64 * st.f_frsize as u64)
-}
-
-#[cfg(not(unix))]
-fn free_space(_dir: &Path) -> Option<u64> {
-    None
+    omsi_launcher_lib::install::free_space(dir)
 }
 
 /// What the joining game found out: to say in the HUD/launcher.
@@ -635,11 +696,36 @@ pub struct Report {
     pub bytes: u64,
     pub had: usize,
     pub refused: Vec<String>,
+    /// Files of vehicle folders this machine has of its own, left as they are here.
+    pub kept_own: usize,
+}
+
+/// Does `rel` lie in a vehicle folder (`Vehicles/<name>`, `Trains/<name>`) this machine has
+/// of its own - in the original installation or its own mods, not among what a host sent?
+/// The host's map may use a bus pack the player has in another version: the host's copy of
+/// the folder put first would hide the player's paints (`.cti`) and textures of the same
+/// names for the whole session, the bus the player drives too. The player's stays; a
+/// vehicle of the map then shows in the player's version (until it goes by fingerprint).
+fn own_vehicle_folder(rel: &str, root: &Path) -> bool {
+    let comps: Vec<&str> = rel.split('/').collect();
+    if comps.len() < 3 || !(comps[0].eq_ignore_ascii_case("vehicles") || comps[0].eq_ignore_ascii_case("trains")) {
+        return false;
+    }
+    let folder = comps[..2].join("/");
+    let mut roots: Vec<PathBuf> = omsi_cfg::content_roots().into_iter().filter(|r| !omsi_cfg::is_sandbox(r)).collect();
+    if !roots.iter().any(|r| r == root) {
+        roots.push(root.to_path_buf());
+    }
+    roots.iter().any(|r| omsi_cfg::vfs::is_dir(&omsi_cfg::resolve_path(r, &folder)))
 }
 
 fn read_reply(input: &mut impl BufRead) -> Result<Option<u64>, String> {
     let mut line = String::new();
-    input.read_line(&mut line).map_err(|e| e.to_string())?;
+    // (no answer at all - the connection closed, the host restarted: asked again soon, not
+    // "the host says: " with nothing after it, which gave a bus up for good)
+    if input.read_line(&mut line).map_err(|e| format!("{CONNECTION_LOST}: {e}"))? == 0 {
+        return Err(format!("{CONNECTION_LOST}: closed by the host"));
+    }
     let t = line.trim();
     if let Some(rest) = t.strip_prefix("OK") {
         let rest = rest.trim();
@@ -677,6 +763,12 @@ type Connection = (TcpStream, SecureWriter<TcpStream>, SecureReader<BufReader<Tc
 
 /// A connection to the host's mods, greeted.
 fn open(host: SocketAddr, session: u64) -> Result<Connection, String> {
+    open_waiting(host, session, Duration::from_secs(25))
+}
+
+/// A connection to the host's mods, greeted, whose answers are waited for up to `wait` (on
+/// the handle that reads: a copy of the socket set later did not change it on Windows).
+fn open_waiting(host: SocketAddr, session: u64, wait: Duration) -> Result<Connection, String> {
     let stream = TcpStream::connect_timeout(&host, Duration::from_secs(6)).map_err(|e| format!("cannot reach the host's mods on TCP {host}: {e}"))?;
     // the host greets once its list is made, which takes a while on a big map (it waits
     // up to ten minutes for it): after 25 s a join gave up on a big add-on map, and the
@@ -689,7 +781,10 @@ fn open(host: SocketAddr, session: u64) -> Result<Connection, String> {
     let keys = channel::Handshake::new().map_err(|e| e.to_string())?;
     writeln!(out, "{} {} {}", channel::MAGIC, omsi_net::session_hex(session), keys.public_hex()).map_err(|e| e.to_string())?;
     let mut line = String::new();
-    input.read_line(&mut line).map_err(|e| e.to_string())?;
+    // (a connection the host closed or broke before it greeted: it is asked again soon)
+    if input.read_line(&mut line).map_err(|e| format!("{CONNECTION_LOST}: {e}"))? == 0 {
+        return Err(format!("{CONNECTION_LOST}: closed by the host"));
+    }
     let t = line.trim();
     let Some(host_key) = t.strip_prefix("OK ") else {
         let said = t.strip_prefix("ERR").unwrap_or(t).trim();
@@ -701,7 +796,7 @@ fn open(host: SocketAddr, session: u64) -> Result<Connection, String> {
     };
     let (send, receive) = keys.finish(session, true, host_key.trim()).map_err(|e| e.to_string())?;
     // (then a stalled transfer ends the attempt instead of holding the game's start for ever)
-    input.get_ref().set_read_timeout(Some(Duration::from_secs(25))).ok();
+    input.get_ref().set_read_timeout(Some(wait)).ok();
     Ok((raw, SecureWriter::new(out, send), SecureReader::new(input, receive)))
 }
 
@@ -712,6 +807,15 @@ fn store_dir() -> Option<PathBuf> {
 }
 
 pub fn fetch(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn FnMut(u64, u64, &str)) -> Result<Report, String> {
+    fetch_with(args, host, session, progress, false)
+}
+
+/// How many files the session's mount holds (a look again that finds no more leaves it).
+static MOUNTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `fetch`, or (`again`) a look at the host's list in the middle of the session: then the
+/// session's content is mounted again only when it has more files than before.
+fn fetch_with(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn FnMut(u64, u64, &str), again: bool) -> Result<Report, String> {
     if omsi_cfg::flags::OMSI_NO_LAN_MODS.is_set() {
         return Err("switched off (OMSI_NO_LAN_MODS)".into());
     }
@@ -735,6 +839,12 @@ pub fn fetch(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn
     for (k, e) in manifest.entries.iter().enumerate() {
         if let Some(why) = refuse_path(&e.path) {
             report.refused.push(format!("{}: {why}", e.path));
+            continue;
+        }
+        // a vehicle folder this machine has of its own is never covered by the host's: its
+        // paints (`.cti`) and textures stay this player's, also on the bus it drives
+        if own_vehicle_folder(&e.path, &args.root) {
+            report.kept_own += 1;
             continue;
         }
         // (the hash names the file in the store: nothing but 64 hex digits may go there)
@@ -894,6 +1004,11 @@ pub fn fetch(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn
             log::warn!("LAN mods: {x}; {} files left, connecting again", left.len());
         }
     }
+    if again && mounted.len() <= MOUNTED.load(std::sync::atomic::Ordering::Relaxed) {
+        upload::remember_host(host, session);
+        return Ok(report);
+    }
+    MOUNTED.store(mounted.len(), std::sync::atomic::Ordering::Relaxed);
     // the session folder is content like any other, searched first, and never a source of
     // plugins
     omsi_cfg::vfs::mount_sealed(&dir, store.key(), mounted);
@@ -908,7 +1023,11 @@ pub fn fetch(args: &mut Args, host: SocketAddr, session: u64, progress: &mut dyn
     if !report.refused.is_empty() {
         log::warn!("LAN mods: {} files refused: {}", report.refused.len(), report.refused.iter().take(8).cloned().collect::<Vec<_>>().join("; "));
     }
+    if report.kept_own > 0 {
+        log::info!("LAN mods: {} files of vehicle folders this machine has of its own were left as they are here", report.kept_own);
+    }
     log::info!("LAN mods: fetched {} files ({:.1} MB), {} were here already", report.fetched, report.bytes as f64 / 1e6, report.had);
+    upload::remember_host(host, session);
     Ok(report)
 }
 
@@ -1044,6 +1163,22 @@ mod tests {
         });
         let err = open(old_addr, 0x01d).err().unwrap();
         assert!(err.contains("older") && err.contains("same version"), "{err}");
+    }
+
+    /// A vehicle folder this machine has of its own is never covered by the host's (its
+    /// paints stay this player's); one it lacks, and everything else of the map, comes.
+    #[test]
+    fn the_hosts_vehicle_folders_never_cover_ours() {
+        let root = std::env::temp_dir().join(format!("openomsi-own-vehicles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Vehicles").join("MyBus").join("Texture")).unwrap();
+        std::fs::write(root.join("Vehicles").join("MyBus").join("Texture").join("repaints.cti"), b"[item]\nMine\nx\ny.dds\n").unwrap();
+        assert!(own_vehicle_folder("Vehicles/MyBus/Texture/repaints.cti", &root));
+        assert!(own_vehicle_folder("vehicles/mybus/model/model.cfg", &root), "as Windows finds it");
+        assert!(!own_vehicle_folder("Vehicles/TheirBus/Texture/repaints.cti", &root));
+        assert!(!own_vehicle_folder("maps/Town/global.cfg", &root));
+        assert!(!own_vehicle_folder("Sceneryobjects/X/x.sco", &root));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

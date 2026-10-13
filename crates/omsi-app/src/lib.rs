@@ -46,6 +46,7 @@ mod game_controller_menu;
 mod rail_drive;
 mod driver;
 mod export;
+mod map_pack;
 mod hud;
 mod humans;
 mod journey;
@@ -353,7 +354,9 @@ pub(crate) fn prepare(mut args: Args, bare: bool) -> Result<Option<(Args, Option
             }
         }
     }
-    if let Some(memo) = root_memo().filter(|_| is_omsi_root(&args.root)) {
+    // (only a game played remembers its installation: a server or a map pack run on another
+    // folder - a server's reduced copy - made the launcher take that one for the player's)
+    if let Some(memo) = root_memo().filter(|_| is_omsi_root(&args.root) && server_cfg.is_none() && args.pack_map.is_none()) {
         let _ = std::fs::write(memo, args.root.to_string_lossy().as_bytes());
     }
     // content roots: the game's own folder (mods) first, then the original installation
@@ -384,6 +387,27 @@ pub(crate) fn prepare(mut args: Args, bare: bool) -> Result<Option<(Args, Option
 /// The game for `args`, ready for its window; None when there is no window to open (a
 /// picture or a model was written instead).
 pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) -> Result<Option<App>> {
+    // `--pack-map`: a map for a server, and nothing else
+    if let (Some(map), Some(to)) = (args.pack_map.clone(), args.pack_to.clone()) {
+        let p = map_pack::pack(&map, &to)?;
+        eprintln!(
+            "Packed {}: {} files, {:.1} MB ({} linked, {} copied, {} there already) into {}",
+            map_pack::map_cfg(&map),
+            p.files,
+            p.bytes as f64 / 1e6,
+            p.linked,
+            p.copied,
+            p.kept,
+            to.display()
+        );
+        if !p.missing.is_empty() {
+            eprintln!("{} files the map names are not on this machine (the server and its players lack them too):", p.missing.len());
+            for m in p.missing.iter().take(20) {
+                eprintln!("  {m}");
+            }
+        }
+        return Ok(None);
+    }
     let _lan_status = lan::StatusFileGuard;
     // OMSI's tutorials: the lesson's own situation
     if let Some(n) = args.tutorial.filter(|n| (1..=4).contains(n)) {
@@ -451,13 +475,19 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
     // the host's mods: served by the host, fetched by a joining player before its world is
     // made (see `lan_mods`)
     lan_mods::remove_stale();
+    // (a joining player notes the files its game reads: its own bus's go to a server that
+    // lacks it, see `lan_mods::upload`)
+    omsi_cfg::vfs::record_reads(lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client));
     if let Some(l) = lan.as_mut() {
         lan::share_mods(&mut args, l);
         lan::take_host_map(&mut args, l);
     }
     if let (Some(cfg), Some(l)) = (server_cfg.as_ref(), lan.as_ref()) {
         lan::open_public_gateway(l, server::info_of(cfg), cfg.web_port, cfg.tunnel);
-        lan::publish_vehicles(args.root.clone(), cfg.vehicles.clone());
+        // (a server that takes its players' buses offers any bus: one it lacks is sent to it)
+        if !(cfg.accept_uploads && cfg.vehicles.is_empty()) {
+            lan::publish_vehicles(args.root.clone(), cfg.vehicles.clone());
+        }
         if cfg.tunnel {
             // the address to give the players, as soon as cloudflared says it
             std::thread::spawn(|| {
@@ -890,6 +920,50 @@ mod locale_tests {
                 }
                 assert!(templated(&t, &once, tr).is_none_or(|twice| twice == once), "{lang}: {key}: {once}");
             }
+        }
+    }
+
+    #[test]
+    fn every_text_of_the_tables_is_in_brazilian_portuguese() {
+        fn marks(s: &str) -> Vec<&str> {
+            let mut m: Vec<&str> = s.match_indices('{').filter_map(|(i, _)| s[i..].find('}').map(|j| &s[i..i + j + 1])).collect();
+            m.sort();
+            m
+        }
+        let (mut keys, mut missing) = (0, Vec::new());
+        let mut lines = super::_LOCALES.lines().peekable();
+        while let Some(l) = lines.next() {
+            let Some(key) = l.strip_prefix('"').and_then(|k| k.strip_suffix("\":")) else { continue };
+            keys += 1;
+            let mut pt = None;
+            // (a block may have blank lines among its languages)
+            while let Some(lang) = lines.next_if(|x| x.starts_with("  ") || x.is_empty()) {
+                pt = pt.or(lang.strip_prefix("  pt: \"").and_then(|t| t.strip_suffix('"')));
+            }
+            match pt {
+                Some(t) => assert_eq!(marks(t), marks(key), "pt of {key}: {t}"),
+                None => missing.push(key),
+            }
+        }
+        assert!(keys > 1000, "{keys}");
+        assert!(missing.is_empty(), "{} texts without pt: {missing:?}", missing.len());
+    }
+
+    #[test]
+    fn texts_as_the_code_makes_them_come_out_in_brazilian_portuguese() {
+        let t = templates(super::locale_keys(super::_LOCALES));
+        let tr = |key: &str| super::_rust_i18n_try_translate("pt", key).map(|t| t.into_owned());
+        for (text, pt) in [
+            ("Joined Garagem over UDP - choose your bus and duty, then Start the duty", "Entrou em Garagem via UDP - escolha seu ônibus e a escala, depois Iniciar a escala"),
+            ("Maps: 3, buses: 12, weathers: 7", "Mapas: 3, ônibus: 12, climas: 7"),
+            ("Step 2 of 5: Pedal response", "Passo 2 de 5: Resposta dos pedais"),
+            ("Saved 4 line(s)", "4 linha(s) salva(s)"),
+            ("Host's mods could not be fetched (timed out)", "Não foi possível buscar os mods do anfitrião (timed out)"),
+        ] {
+            assert_eq!(tr(text).or_else(|| templated(&t, text, tr)).as_deref(), Some(pt), "{text}");
+        }
+        for text in ["Developer tools", "Not saved", "Set by", "tours"] {
+            assert!(tr(text).is_some(), "{text}");
         }
     }
 }
