@@ -22,7 +22,22 @@ git commit -am "Version 1.2" && git push
 launcher's side bar, in its log and in `openomsi --version` (baked in by
 `crates/omsi-app/build.rs`, which uses the same rule).
 
-## Releases
+## Releases: beta, then stable
+
+There are two channels:
+
+| Channel | What it is | Who gets it |
+| --- | --- | --- |
+| **Beta** | every push to `main`, published as a GitHub **pre-release** | testers: the launcher's **Settings → General → Updates → Update channel: Beta**, or the [Releases](https://github.com/openOMSI-org/openOMSI/releases) page |
+| **Stable** | a beta the maintainers have tested and promoted | every other player: on the Stable channel (the default) the launcher's updater, the start guard, the website's Download page, `releases/latest` and the README badge only ever see stable releases |
+
+On the Beta channel the updater offers the newest release, beta or stable, that has a file
+for this computer and is not listed in `release/health.json`, and *Choose a version…* lists
+the betas too (marked *Beta*). Changing the channel looks for an update again at once. Back on Stable, nothing is taken away: the
+beta installed stays until a newer stable release comes out, or an older one is chosen in
+*Choose a version…*.
+
+### Beta: every push to `main`
 
 Every push to `main` runs [`.github/workflows/release.yml`](../.github/workflows/release.yml):
 
@@ -30,11 +45,42 @@ Every push to `main` runs [`.github/workflows/release.yml`](../.github/workflows
 2. builds Windows x64 and ARM64 (MSVC), macOS for Apple silicon and Intel, Linux x64 and
    ARM64 and Android in parallel, and packs the dedicated server from the Linux and Windows
    builds;
-3. creates the release `v<version>` (tag on that commit) with the archives
+3. creates the pre-release `v<version>` (tag on that commit) with the archives
    `openOMSI-<version>-windows-x64.zip`, `-windows-arm64.zip`, `-macos-arm64.zip`,
    `-macos-x64.zip`, `-linux-x64.zip`, `-linux-arm64.zip`, `-android-arm64.apk`,
    `-server-linux-x64.zip`, `-server-linux-arm64.zip`, `-server-windows-x64.zip`,
-   `-server-windows-arm64.zip`, and release notes generated from the commits.
+   `-server-windows-arm64.zip`, a `SHA256SUMS` file with the SHA-256 of each of them, and
+   release notes from this version's section of `CHANGELOG.md`
+   ([`scripts/release-notes.sh`](../scripts/release-notes.sh)).
+
+### Stable: promoting a tested beta
+
+Only betas of `main` are published (a workflow run on another branch builds without
+publishing). When a beta has been tested and nothing blocks it (about once a week, sooner for an urgent
+fix), a maintainer runs **Actions → Promote a beta → Run workflow** with its version
+([`.github/workflows/promote.yml`](../.github/workflows/promote.yml)). The beta becomes the
+stable release as it is: the same tag, the same files, the same SHA-256 - nothing is built
+again. Its notes are rewritten to list every change since the previous stable release (the
+sections of `CHANGELOG.md` in between). Only a published beta of `main`, newer than the current
+stable release, with the files of every platform and not listed in `release/health.json`,
+can be promoted.
+
+### A published release never changes
+
+A version is published once. The release job refuses to publish a version that already
+exists, or whose tag names another commit; it never moves a tag nor replaces a file. A
+mistake in a release is fixed by a new commit, hence a new version. With the repository's
+*immutable releases* setting on, GitHub enforces it too.
+
+The `SHA256SUMS` of a release checks a download by hand:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+The launcher's updater checks each archive against the SHA-256 that GitHub's API lists for
+it before installing it (when the API cannot be reached and the updater falls back to
+github.com, it relies on the HTTPS connection alone).
 
 Pull requests run the same builds without publishing anything. Build output never goes
 into the repository (`target/` and `dist/` are ignored).
@@ -53,7 +99,7 @@ A pull request's builds are test builds for anyone who wants to try the change:
   no GitHub account needed) once they are built, and updates that comment on every push.
   The files are kept for 14 days.
 
-The version badge at the top of the README always shows the newest release.
+The version badge at the top of the README always shows the newest stable release.
 
 ### A broken release
 
@@ -70,7 +116,7 @@ on `main`:
 Every start of a listed version notes it; the next start installs a newer release when there
 is one, else goes back to the version before (when its files are still kept, i.e. the listed
 version has not been running long), and tells the player why with the message. Then push the
-fixed release as usual. The list is read from GitHub with a short wait at each start; offline,
+fix and promote its beta as soon as it is checked. The list is read from GitHub with a short wait at each start; offline,
 nothing happens. Take a version off the list once nobody runs it any more.
 
 Before any update replaces a program, the new one must pass `openomsi --self-test` (it starts,

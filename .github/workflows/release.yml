@@ -1,6 +1,7 @@
 # Builds openOMSI for Windows and Linux (x64, ARM64), macOS (Apple silicon, Intel) and Android
 # (plus the dedicated server for Linux and Windows) on every push to
-# main and publishes them as the release v<MAJOR.MINOR.COMMIT>; see docs/VERSIONING.md.
+# main and publishes them as the beta (pre-release) v<MAJOR.MINOR.COMMIT>; promote.yml makes a
+# tested beta the stable release. See docs/VERSIONING.md.
 # Pull requests run the same builds without publishing.
 name: Release
 
@@ -9,8 +10,8 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    # (a release of one platform alone: a fix only that platform needs, out sooner; a
-    # published release keeps its files, so the others never join it)
+    # (a beta of one platform alone, to test a fix only that platform needs; a published
+    # release keeps its files, so the others never join it, and it cannot be promoted)
     inputs:
       only:
         description: Platform to build and release alone
@@ -318,7 +319,7 @@ jobs:
           mkdir -p out
           cp "dist/android/openOMSI-$OPENOMSI_VERSION.apk" "out/openOMSI-$OPENOMSI_VERSION-android-arm64.apk"
           # (and under a name of its own: releases/latest/download/openOMSI-android.apk is
-          # always the newest APK - for a phone whose installed build cannot update itself)
+          # always the newest stable APK - for a phone whose installed build cannot update itself)
           cp "dist/android/openOMSI-$OPENOMSI_VERSION.apk" "out/openOMSI-android.apk"
       - uses: actions/upload-artifact@v7
         with:
@@ -329,7 +330,7 @@ jobs:
 
   release:
     # (the platforms not built again are skipped, not failed)
-    if: ${{ !cancelled() && !failure() && github.event_name != 'pull_request' }}
+    if: ${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     needs: [version, windows, macos, linux, android]
     runs-on: ubuntu-latest
     permissions:
@@ -345,55 +346,27 @@ jobs:
         with:
           path: out
           merge-multiple: true
-      - name: Publish v${{ needs.version.outputs.version }}
+      - name: Publish v${{ needs.version.outputs.version }} (beta)
         run: |
           ls -l out
-          # what changed: this version's section of CHANGELOG.md (up to the next version)
-          awk -v v="## $VERSION" 'index($0, v) == 1 && (length($0) == length(v) || substr($0, length(v) + 1, 1) == " ") {f = 1; next} f && /^## / {exit} f {print}' CHANGELOG.md > changes.md
-          # a release for every push: without a section of its own, what CHANGELOG.md gained
-          # since the previous release (the lines added, in their order)
-          if ! grep -q '[^[:space:]]' changes.md; then
-            prev=$(git tag -l 'v*' --sort=-v:refname | grep -vx "v$VERSION" | head -1)
-            if [ -n "$prev" ]; then
-              git diff --unified=0 "$prev" HEAD -- CHANGELOG.md | grep '^+' | grep -v '^+++' | sed 's/^+//' | grep -v '^## ' > changes.md || true
-            fi
+          if [ "$(gh release view "v$VERSION" --json isDraft --jq .isDraft 2>/dev/null)" = true ]; then
+            gh release delete "v$VERSION" --yes
           fi
-          if ! grep -q '[^[:space:]]' changes.md; then
-            echo "Small changes and fixes." > changes.md
-          fi
-          cat > notes.md <<NOTES
-          **openOMSI $VERSION**
-
-          > **Early release, expect bugs.** openOMSI needs an original OMSI 2 installation to run; it contains no game content.
-
-          NOTES
-          cat changes.md >> notes.md
-          cat >> notes.md <<NOTES
-
-          ### Downloads
-
-          | Platform | Download |
-          | --- | --- |
-          | Windows x64 | \`openOMSI-$VERSION-windows-x64.zip\` |
-          | Windows ARM64 | \`openOMSI-$VERSION-windows-arm64.zip\` |
-          | macOS (Apple silicon) | \`openOMSI-$VERSION-macos-arm64.zip\` |
-          | macOS (Intel) | \`openOMSI-$VERSION-macos-x64.zip\` |
-          | Linux x64 | \`openOMSI-$VERSION-linux-x64.zip\` |
-          | Linux ARM64 | \`openOMSI-$VERSION-linux-arm64.zip\` |
-          | Android (arm64, 8.0+) | \`openOMSI-$VERSION-android-arm64.apk\` |
-          | Dedicated server, Linux | \`openOMSI-$VERSION-server-linux-x64.zip\`, \`openOMSI-$VERSION-server-linux-arm64.zip\` |
-          | Dedicated server, Windows | \`openOMSI-$VERSION-server-windows-x64.zip\`, \`openOMSI-$VERSION-server-windows-arm64.zip\` |
-          NOTES
-          git tag -f "v$VERSION" "$GITHUB_SHA"
-          git push -f origin "v$VERSION"
           if gh release view "v$VERSION" >/dev/null 2>&1; then
-            # the same version built again (main was rewritten and pushed once more): the
-            # release stays, with this build's files and notes
-            gh release upload "v$VERSION" $(ls out/*.zip out/*.apk 2>/dev/null) --clobber
-            gh release edit "v$VERSION" --title "openOMSI $VERSION" --notes-file notes.md
-          else
-            gh release create "v$VERSION" $(ls out/*.zip out/*.apk 2>/dev/null) \
-              --verify-tag \
-              --title "openOMSI $VERSION" \
-              --notes-file notes.md
+            echo "::error::v$VERSION is already published and stays as it is: a fix is released as a new version"
+            exit 1
           fi
+          if ! git tag "v$VERSION" "$GITHUB_SHA" 2>/dev/null && [ "$(git rev-parse "v$VERSION^{commit}")" != "$GITHUB_SHA" ]; then
+            echo "::error::the tag v$VERSION already names another commit"
+            exit 1
+          fi
+          git push origin "v$VERSION"
+          sh scripts/release-notes.sh "$VERSION" > notes.md
+          cd out
+          files=$(ls *.zip *.apk 2>/dev/null || true)
+          sha256sum $files > SHA256SUMS
+          gh release create "v$VERSION" $files SHA256SUMS \
+            --verify-tag \
+            --prerelease \
+            --title "openOMSI $VERSION" \
+            --notes-file ../notes.md

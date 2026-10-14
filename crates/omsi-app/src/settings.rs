@@ -770,36 +770,40 @@ impl Settings {
                 _ => {}
             }
         }
+        s.settle_after_reading(graphics, version);
+        s
+    }
+
+    fn settle_after_reading(&mut self, graphics: Option<String>, version: u32) {
         // `graphics` decides; a file without it (older builds) says only `enhanced`, and
         // its vanilla renderer is what is now called Vanilla+
-        s.graphics = graphics.unwrap_or_else(|| if s.enhanced { "enhanced" } else { "vanilla_plus" }.to_string());
-        s.enhanced = s.graphics == "enhanced" || s.graphics == "enhanced_plus";
+        self.graphics = graphics.unwrap_or_else(|| if self.enhanced { "enhanced" } else { "vanilla_plus" }.to_string());
+        self.enhanced = self.graphics == "enhanced" || self.graphics == "enhanced_plus";
         // Enhanced+ is Enhanced with ray tracing: its shadows, ambient occlusion and
         // reflections are traced and belong to it - they cannot be switched off apart
-        if s.ray_tracing() {
-            s.shadows = true;
-            s.ssao = true;
-            s.reflections = true;
+        if self.ray_tracing() {
+            self.shadows = true;
+            self.ssao = true;
+            self.reflections = true;
         }
-        if s.classic() {
-            s.shadows = false;
-            s.ssao = false;
-            s.detail_textures = false;
+        if self.classic() {
+            self.shadows = false;
+            self.ssao = false;
+            self.detail_textures = false;
         }
         // Files older than version 2 say `boarding=pay` because that was the launcher's
         // default, not because anybody chose it: passengers then stood at the cash desk
         // waiting for a driver who did not know he had to sell them a ticket.
         // Files older than version 3 say `passenger_animation=original` because that was the
         // default, not because anybody chose it: the people's own poses are the default now.
-        if version < SETTINGS_VERSION && s.passenger_animation == "original" {
+        if version < SETTINGS_VERSION && self.passenger_animation == "original" {
             log::info!("settings: passenger_animation=original from an old settings file taken as the people's own poses (choose Original OMSI again to keep it)");
-            s.passenger_animation = "enhanced".into();
+            self.passenger_animation = "enhanced".into();
         }
-        if version < 2 && s.boarding == "pay" {
+        if version < 2 && self.boarding == "pay" {
             log::info!("settings: boarding=pay from an old settings file taken as auto (choose pay again in the launcher to keep it)");
-            s.boarding = "auto".into();
+            self.boarding = "auto".into();
         }
-        s
     }
 
     /// The settings as the file holds them. The game only ever reads the file - the
@@ -1427,17 +1431,7 @@ mod resolution_tests {
 }
 
 #[cfg(test)]
-mod right_stick_look_tests {
-    #[test]
-    fn existing_settings_keep_automatic_look_and_the_switch_round_trips() {
-        assert!(super::Settings::from_text("").right_stick_look);
-        for enabled in [false, true] {
-            let settings = super::Settings::from_text(&format!("right_stick_look={}\n", enabled as u8));
-            assert_eq!(settings.right_stick_look, enabled);
-            assert_eq!(super::Settings::from_text(&settings.to_text()).right_stick_look, enabled);
-        }
-    }
-}
+mod right_stick_look_tests;
 
 /// The driver's seat per bus (`~/.openomsi/seats.cfg`, a line `bus|x|y|z|pitch` each, the
 /// bus by its `.bus` file relative to the installation, lower case). The seat set in the

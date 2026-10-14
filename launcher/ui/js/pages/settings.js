@@ -8,7 +8,7 @@ import { t } from '../i18n.js';
 import { call, onPhone, inTauri } from '../api.js';
 import { Button, Card, Select, Input, Toggle, Tabs, Slider, PageHead, useConfirm } from '../ui.js';
 import { saveSettings, applyTheme, fitWindow, launcherSize, LAUNCHER_SIZES, launcherLayout, LAUNCHER_LAYOUTS } from '../data.js';
-import { UpdateRow } from '../updates.js';
+import { UpdateRow, checkUpdates } from '../updates.js';
 import { SETTINGS_TABS, GRAPHICS_PROFILE_KEYS } from './settings-schema.js';
 import { VersionsDialog } from './versions.js';
 import { RadioStations } from './radio-stations.js';
@@ -113,7 +113,7 @@ function SelectRow({ row }) {
   const value = match ? match[0] : cur == null ? '' : typeof cur === 'boolean' ? (cur ? '1' : '0') : String(cur);
   return html`<div class="setting-row">
     <${Name} label=${row.label} help=${row.help} />
-    <${Select} value=${value} options=${options} raw=${row.raw} onChange=${(v) => saveSettings({ [row.key]: asStored(cur, v) })} />
+    <${Select} value=${value} options=${options} raw=${row.raw} onChange=${async (v) => (await saveSettings({ [row.key]: asStored(cur, v) })) && row.recheckUpdates && checkUpdates()} />
   </div>`;
 }
 

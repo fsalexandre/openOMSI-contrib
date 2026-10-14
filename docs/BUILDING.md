@@ -1,7 +1,8 @@
 # Building from source
 
-Releases for every commit are on the [Releases](https://github.com/openOMSI-org/openOMSI/releases)
-page; build from source only to work on openOMSI itself.
+Releases (betas of every commit, and the stable releases) are on the
+[Releases](https://github.com/openOMSI-org/openOMSI/releases) page; build from source only to
+work on openOMSI itself.
 
 All scripts live in `scripts/`, run from any folder (paths with spaces are fine) and put the
 result into `dist/<platform>/`. That folder is also the game's **content folder** (mods go

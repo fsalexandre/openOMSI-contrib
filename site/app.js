@@ -60,7 +60,6 @@ scrim.onclick = () => toggleDrawer(false);
 let release = null;
 let releaseAt = 0;
 async function latestRelease() {
-  // (a release comes with every push: what was fetched ten minutes ago may be old)
   if (release && Date.now() - releaseAt < 120000) return release;
   releaseAt = Date.now();
   try {
@@ -251,18 +250,19 @@ function labelChips(labels) {
 
 async function releases() {
   view.innerHTML = `<div class="content"><h1>Releases</h1>
-    <p class="lead">Every version, newest first. The newest one is also on the <a href="#/download">Download</a> page.</p>
+    <p class="lead">Every version, newest first. Betas are for testing; the newest stable release is also on the <a href="#/download">Download</a> page.</p>
     <div id="rel-list"><div class="loading">Loading…</div></div></div>`;
   document.title = "Releases · openOMSI";
   const box = document.getElementById("rel-list");
   let list;
   try { list = await gh("releases?per_page=30"); } catch (e) { box.innerHTML = `<p>${esc(e.message)} <a href="https://github.com/${REPO}/releases">Releases on GitHub</a></p>`; return; }
   if (!list.length) { box.innerHTML = "<p>No release has been published yet.</p>"; return; }
+  const latest = list.findIndex(r => !r.prerelease && !r.draft);
   box.innerHTML = list.map((r, i) => {
     const assets = (r.assets || []).map(a => `<a class="asset" href="${esc(a.browser_download_url)}"><span class="material-icons">download</span>${esc(a.name)} <small>${(a.size / 1048576).toFixed(0)} MB</small></a>`).join("");
-    return `<details class="card elevation-1 release"${i === 0 ? " open" : ""}>
+    return `<details class="card elevation-1 release"${i === latest ? " open" : ""}>
       <summary><span class="rel-tag">${esc(r.tag_name.replace(/^v/, ""))}</span>
-        ${i === 0 ? '<span class="label" style="--lc:#2da44e">Latest</span>' : ""}${r.prerelease ? '<span class="label" style="--lc:#bf8700">Pre-release</span>' : ""}
+        ${i === latest ? '<span class="label" style="--lc:#2da44e">Latest</span>' : ""}${r.prerelease ? '<span class="label" style="--lc:#bf8700">Pre-release</span>' : ""}
         <span class="rel-name">${esc(r.name && r.name !== r.tag_name ? r.name : "")}</span>
         <span class="spacer"></span><span class="muted">${new Date(r.published_at).toLocaleDateString()}</span></summary>
       <div class="doc rel-body">${md(r.body) || "<p class='muted'>No notes.</p>"}</div>

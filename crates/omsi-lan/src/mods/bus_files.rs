@@ -75,7 +75,8 @@ fn add_sounds(cfg: &Path, out: &mut BTreeSet<PathBuf>) {
     let Ok(c) = omsi_vehicle::SoundCfg::load(cfg) else { return };
     add(out, cfg.to_path_buf());
     let dir = cfg.parent().unwrap_or(Path::new(""));
-    let clips = omsi_audio::SoundSet::clip_paths(&c, dir);
+    // (its fixed clips, as the mixer finds them; `[sound] N` names none)
+    let clips: Vec<PathBuf> = c.sounds.iter().filter(|def| def.file.trim().parse::<i32>().is_err()).map(|def| omsi_cfg::resolve_path(dir, &def.file)).collect();
     let mut folders: BTreeSet<PathBuf> = BTreeSet::new();
     for p in clips {
         if let Some(f) = p.parent() {
@@ -100,7 +101,7 @@ fn add_textures(root: &Path, ty: &VehicleType, scheme: Option<usize>, out: &mut 
     let mut dirs = ty.texture_dirs(root);
     let subst = match scheme {
         Some(i) => {
-            let (m, d) = ty.scheme_substitutions(i);
+            let (m, d) = ty.scheme_substitutions(i, omsi_texture::find_texture);
             if let Some(d) = d {
                 // the scheme's own description (`.cti`): which of them it is
                 for (name, is_dir) in omsi_cfg::vfs::list_dir(&d).unwrap_or_default() {

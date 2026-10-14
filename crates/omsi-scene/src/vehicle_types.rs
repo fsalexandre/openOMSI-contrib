@@ -627,7 +627,7 @@ pub(super) fn vehicle_texture_names(
 ) -> Vec<(String, Vec<PathBuf>)> {
     let dirs = vt.texture_dirs(root);
     let (subst, _scheme_dir) = match scheme {
-        Some(i) => vt.scheme_substitutions(i),
+        Some(i) => vt.scheme_substitutions(i, omsi_texture::find_texture),
         None => (vt.default_substitutions(root), None),
     };
     let subst = |name: &str| -> String {
@@ -691,7 +691,7 @@ pub(super) fn vehicle_bump_names(
     }
     let dirs = vt.texture_dirs(root);
     let (subst, _scheme_dir) = match scheme {
-        Some(i) => vt.scheme_substitutions(i),
+        Some(i) => vt.scheme_substitutions(i, omsi_texture::find_texture),
         None => (vt.default_substitutions(root), None),
     };
     let mut out: Vec<(String, Vec<PathBuf>)> = Vec::new();

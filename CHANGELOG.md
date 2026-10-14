@@ -1,8 +1,51 @@
 # Changelog
 
-Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
-[docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
-[Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
+Every push to `main` is released as the beta `MAJOR.MINOR.COMMIT`, and tested betas are
+promoted to stable releases (see [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
+[Releases](https://github.com/openOMSI-org/openOMSI/releases) page.
+
+## 0.2.60 - 2026-10-14
+
+### New
+
+- **Beta and Stable releases:** pushes to `main` publish Beta releases for testers.
+  Maintainers can promote a tested Beta to Stable without rebuilding or replacing
+  its files. Releases include `SHA256SUMS`, and an already published version is
+  never replaced ([#2565](https://github.com/openOMSI-org/openOMSI/pull/2565)).
+- **Update channel in the launcher:** Settings → General → Updates offers Stable
+  (the default, including for existing settings) and Beta. The Beta channel offers
+  the newest compatible release, including prereleases, while skipping releases
+  listed as broken. The version picker marks Beta releases, and Stable releases
+  remain visible behind pages of newer Betas
+  ([#2571](https://github.com/openOMSI-org/openOMSI/pull/2571)).
+
+### Project and security checks
+
+- The pull-request template asks authors to describe risks and check translations,
+  compatibility and the absence of original OMSI 2 content
+  ([#2566](https://github.com/openOMSI-org/openOMSI/pull/2566)).
+- CodeQL analyses the project's Rust, JavaScript/TypeScript and GitHub Actions
+  workflows; the custom scan excludes vendored launcher patches
+  ([#2568](https://github.com/openOMSI-org/openOMSI/pull/2568)).
+- The source distribution uses GNU AGPL v3 only and includes `TRADEMARKS.md`,
+  retaining historical MIT and third-party notices
+  ([#2599](https://github.com/openOMSI-org/openOMSI/pull/2599)).
+
+### Known follow-ups
+
+- Switching update channels while a lookup is already running can leave a result
+  from the previous channel. The approval of #2571 accepts this as a follow-up;
+  this release does not claim to fix that race.
+- Dispatch Beta promotion from current `main`: running the promotion workflow
+  from an older ref can read an older broken-release policy. This remains a
+  follow-up from the review of #2565.
+
+### Credits
+
+The release workflow, launcher channels, review template and CodeQL changes were
+authored by **Thibaut (@thibautgnt)**. The original openOMSI codebase was created
+by **usonskyyyy**. The official organization is
+[openOMSI.org (`openOMSI-org`)](https://github.com/openOMSI-org).
 
 ## 0.2.48 - 2026-10-13
 

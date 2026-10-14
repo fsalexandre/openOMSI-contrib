@@ -362,48 +362,6 @@ mod tests {
         (waits, (now - t0).as_secs_f64())
     }
 
-    /// What a dedicated server simulates, as one number: Grundorf with traffic, the timetable
-    /// and passengers on the server's graphics without a device, for two minutes of its world;
-    /// the cars and the people where they are, and what they are doing. A change to what the
-    /// server keeps of the graphics (`omsi_render`'s mesh pages on no device) must leave it
-    /// as it was: run before and after, the two numbers the same.
-    ///   OMSI_ROOT=… cargo test -p omsi-app --release server_simulation_fingerprint -- --ignored --nocapture
-    #[test]
-    #[ignore = "needs the OMSI 2 files (OMSI_ROOT); prints a number to compare"]
-    fn server_simulation_fingerprint() {
-        use clap::Parser;
-        use std::hash::{Hash, Hasher};
-        let Some(root) = std::env::var_os("OMSI_ROOT") else { return };
-        crate::server::SERVER_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
-        let out = std::env::temp_dir().join("omsi-sim-fingerprint.png");
-        let root = std::path::PathBuf::from(root);
-        let args = crate::cli::Args::parse_from([
-            "openomsi".as_ref(), "--root".as_ref(), root.as_os_str(), "--map".as_ref(), "maps/Grundorf/global.cfg".as_ref(),
-            "--offscreen".as_ref(), out.as_os_str(), "--traffic".as_ref(), "30".as_ref(), "--schedule".as_ref(), "--passengers".as_ref(),
-            "--time".as_ref(), "08:00".as_ref(), "--date".as_ref(), "2024-05-14".as_ref(), "--radius".as_ref(), "99".as_ref(), "--drive".as_ref(), "120".as_ref(),
-        ] as [&std::ffi::OsStr; 19]);
-        let mut run = super::Offscreen::setup(&args, &out, None, crate::lan::LanGame::default()).expect("the run");
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        let mm = |v: f64| (v * 1000.0).round() as i64;
-        for i in 0..run.total_frames {
-            if !run.step(i).expect("a step") {
-                break;
-            }
-            if i % 300 == 299 {
-                let t = run.traffic.as_ref().expect("traffic");
-                let people = run.humans_off.as_ref().map(|p| p.people.len()).unwrap_or(0);
-                println!("step {}: {} cars, {} people", i + 1, t.cars.len(), people);
-                for c in &t.cars {
-                    (mm(c.vehicle.position.x), mm(c.vehicle.position.y), mm(c.vehicle.position.z), c.vehicle.ty.def.passenger_cabin.is_some()).hash(&mut h);
-                }
-                for p in run.humans_off.iter().flat_map(|p| p.people.iter()) {
-                    (p.id, mm(p.position.x), mm(p.position.y), mm(p.position.z), format!("{:?}", p.place)).hash(&mut h);
-                }
-            }
-        }
-        println!("server simulation fingerprint: {:016x}", h.finish());
-    }
-
     #[test]
     fn a_server_keeps_to_the_clock_whatever_its_steps_take() {
         // a dedicated server on Gladbeck: 8 ms of work a step; 300 steps (10 s of its world)

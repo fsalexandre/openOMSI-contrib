@@ -20,6 +20,7 @@ function Row({ r, on, blocked, onPick }) {
     </span>
     <span class="tags">
       ${r.latest && html`<${Tag} kind="ok">${t('Latest')}</${Tag}>`}
+      ${r.beta && html`<${Tag}>${t('Beta')}</${Tag}>`}
       ${r.current && html`<${Tag} kind="accent">${t('Installed')}</${Tag}>`}
       ${r.broken === 'here' && html`<${Tag} kind="danger">${t('Did not start on this computer')}</${Tag}>`}
       ${r.broken === 'listed' && html`<${Tag} kind="danger">${t('Known to be broken')}</${Tag}>`}

@@ -731,8 +731,7 @@ impl App {
     /// of the world once it is there. Returns false while the loading screen is up.
     pub(crate) fn drive_start(&mut self, event_loop: &ActiveEventLoop) -> bool {
         let Some(cam) = self.cam.starting.take() else {
-            // a joining player's bus goes to a server that lacks it before the drive starts,
-            // so the others see it from its first metre (`omsi_lan::mods::upload`)
+            // (a joining player's bus goes to the server first: `omsi_lan::mods::upload`)
             let Some((caption, progress)) = omsi_lan::mods::upload::loading() else {
                 return true;
             };
@@ -816,8 +815,7 @@ impl App {
         false
     }
 
-    /// One picture of the loading screen (the map's first area, or a joining player's bus
-    /// going to the server): `title` over a bar at `shown` (0..1).
+    /// One loading screen picture (the map, or our bus going to the server): `title`, bar at `shown`.
     fn loading_frame(&mut self, renderer: omsi_render::Renderer, mut scene: Scene, title: &str, shown: f32) {
         let mut reconfigure = false;
         if let (Some(ui), Some(s), Some(win)) = (

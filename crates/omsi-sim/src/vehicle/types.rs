@@ -636,6 +636,7 @@ impl VehicleType {
     pub fn scheme_substitutions(
         &self,
         scheme: usize,
+        find_texture: fn(&str, &[&Path]) -> Option<PathBuf>,
     ) -> (HashMap<String, String>, Option<PathBuf>) {
         let mut map = HashMap::new();
         let Some(s) = self.paint_schemes.get(scheme) else {
@@ -648,7 +649,7 @@ impl VehicleType {
             // the model's textures - with it first in line, a same-named file left there
             // for another scheme (the IK-103's yellow `sedista-diffuse.bmp` beside the grey
             // bars schemes) painted the details of every scheme of the folder.
-            let value = match omsi_texture::find_texture(file, &[s.dir.as_path()]) {
+            let value = match find_texture(file, &[s.dir.as_path()]) {
                 Some(full) => full.to_string_lossy().into_owned(),
                 None => file.clone(),
             };

@@ -876,7 +876,7 @@ fn a_scheme_folder_supplies_only_what_its_cti_names() {
         mesh_bounds: Vec::new(),
         mesh_boxes: Vec::new(),
     };
-    let (map, folder) = ty.scheme_substitutions(0);
+    let (map, folder) = ty.scheme_substitutions(0, omsi_texture::find_texture);
     std::fs::remove_dir_all(&dir).ok();
     assert_eq!(folder.as_deref(), Some(dir.as_path()));
     let body = std::path::Path::new(&map["body.bmp"]);

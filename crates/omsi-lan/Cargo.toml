@@ -15,10 +15,11 @@ omsi-script = { path = "../omsi-script" }
 # the players' buses by their content (`mods`): what a bus's textures and sounds are, and
 # the pieces they go in over the wire
 omsi-texture = { path = "../omsi-texture" }
-omsi-audio = { path = "../omsi-audio" }
 omsi-o3d = { path = "../omsi-o3d" }
 flate2.workspace = true
 zstd.workspace = true
+# `map_pack`: a map packed into a .zip for a server on another machine
+zip.workspace = true
 anyhow.workspace = true
 glam.workspace = true
 hashbrown.workspace = true
@@ -39,6 +40,6 @@ libc.workspace = true
 windows = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography"] }
 
 [dev-dependencies]
-# the tests: a mod archive read in place (`quarantine::scan_content`), the box's picture
-zip.workspace = true
+# the tests: the box's picture (a mod archive is read in place with `zip`, a dependency for
+# `map_pack`'s archives)
 image.workspace = true

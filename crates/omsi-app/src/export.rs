@@ -22,7 +22,7 @@ pub fn export_glb(root: &Path, vt: &VehicleType, vehicle: &VehicleInstance, sche
     let textures = omsi_texture::TextureCache::new();
     let dirs = vt.texture_dirs(root);
     let (subst, _scheme_dir): (hashbrown::HashMap<String, String>, Option<std::path::PathBuf>) = match scheme {
-        Some(i) => vt.scheme_substitutions(i),
+        Some(i) => vt.scheme_substitutions(i, omsi_texture::find_texture),
         None => (vt.default_substitutions(root), None),
     };
     // (the scheme's pictures are named in full by the substitutions; its folder is no

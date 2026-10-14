@@ -257,13 +257,10 @@ pub(crate) struct Args {
     /// launcher's 3D preview, and quit.
     #[arg(long)]
     pub(crate) export_glb: Option<PathBuf>,
-    /// Pack a map with everything it needs (its objects, splines, traffic vehicles, people,
-    /// ground pictures and fonts) for a server that lacks this installation, and quit: its
-    /// name ("Brasil Viagem Xtreme"), folder or global.cfg. With --pack-to.
+    /// Pack a map (name, folder or global.cfg) with everything it uses for a server, and quit.
     #[arg(long, requires = "pack_to")]
     pub(crate) pack_map: Option<String>,
-    /// Where --pack-map writes: the server's content folder (files hard-linked where they
-    /// can be), or a .zip to unpack into it on another machine.
+    /// Where --pack-map writes: the server's content folder (hard links), or a .zip.
     #[arg(long, requires = "pack_map")]
     pub(crate) pack_to: Option<PathBuf>,
     /// Enhanced graphics, as the settings' `enhanced=1`: the physically based renderer

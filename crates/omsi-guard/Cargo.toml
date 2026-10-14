@@ -3,7 +3,7 @@ name = "omsi-guard"
 version = "0.1.0"
 edition = "2021"
 description = "The start guard: a release that crashes or hangs at the start is healed by an update, by going back to the version before, or by a safe mode"
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [dependencies]
 omsi-cfg = { path = "../omsi-cfg" }

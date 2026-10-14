@@ -8,6 +8,7 @@
 
 pub mod avatars;
 pub mod discord;
+pub mod heap;
 pub mod presence;
 pub mod proxy;
 pub mod recovery;

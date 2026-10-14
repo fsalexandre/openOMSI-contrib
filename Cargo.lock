@@ -3644,7 +3644,6 @@ dependencies = [
  "image",
  "libc",
  "log",
- "omsi-audio",
  "omsi-cfg",
  "omsi-map",
  "omsi-net",

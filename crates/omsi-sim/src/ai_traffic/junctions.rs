@@ -985,21 +985,7 @@ impl TrafficSim {
                         *stop_at = Some(stop_at.unwrap_or(f32::MAX).min(point - c.before));
                     }
                 };
-                // vehicles on the other lane, or coming to it
-                let on = on_lane
-                    .get(&m)
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&[])
-                    .iter()
-                    .filter(|e| !e.3)
-                    .map(|&(j, sj, _, _)| (j, c.other_at - sj, true));
-                let near = coming
-                    .get(&m)
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|&(j, dj)| (j, dj + c.other_at, false));
-                for (j, dj, is_on) in on.chain(near) {
+                for (j, dj, is_on) in vehicles_toward(on_lane, coming, m, c.other_at) {
                     if j == i {
                         continue;
                     }
@@ -1027,12 +1013,7 @@ impl TrafficSim {
                     // A stalled car neither claims an imminent arrival nor accelerates
                     // freely in the arrival prediction, even without a reservation.
                     // (queued: right behind a car that stands - not at its own line)
-                    // (the car ahead by the step's index, not a search of every car for every
-                    // car at every meeting place; one it does not know is looked for as before)
-                    let car_by_id = |id: u64| {
-                        self.index_of.get(&id).and_then(|&k| self.cars.get(k)).filter(|x| x.id == id).or_else(|| self.cars.iter().find(|x| x.id == id))
-                    };
-                    let queued = o.lead_info.is_some_and(|(lid, gap)| gap < 8.0 && car_by_id(lid).is_some_and(|x| x.state.speed < 1.0));
+                    let queued = o.lead_info.is_some_and(|(lid, gap)| gap < 8.0 && self.car_by_id(lid).is_some_and(|x| x.state.speed < 1.0));
                     let stalled = (o.stopped > 4.0 && o.state.speed < 0.1) || o.crawl >= 8.0 || (o.state.speed < 1.5 && queued);
                     let theirs = dj - c.other_before - o.state.front;
                     // (one going into a slow queue that lets it in keeps its claim standing)
@@ -1197,4 +1178,33 @@ impl TrafficSim {
         }
         Weighing { hard, ruled, soft, why, stop_at, by, courtesy, holds, people, only_oncoming, oncoming_meet, let_in, nearest, sign_yield }
     }
+
+    // (the car ahead by the step's index, not a search of every car for every
+    // car at every meeting place; one it does not know is looked for as before)
+    fn car_by_id(&self, id: u64) -> Option<&AiCar> {
+        self.index_of.get(&id).and_then(|&k| self.cars.get(k)).filter(|x| x.id == id).or_else(|| self.cars.iter().find(|x| x.id == id))
+    }
+}
+
+// vehicles on the other lane, or coming to it
+fn vehicles_toward<'a>(
+    on_lane: &'a HashMap<usize, Vec<(usize, f32, f32, bool)>>,
+    coming: &'a HashMap<usize, Vec<(usize, f32)>>,
+    lane: usize,
+    other_at: f32,
+) -> impl Iterator<Item = (usize, f32, bool)> + 'a {
+    let on = on_lane
+        .get(&lane)
+        .map(|v| v.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .filter(|e| !e.3)
+        .map(move |&(j, sj, _, _)| (j, other_at - sj, true));
+    let near = coming
+        .get(&lane)
+        .map(|v| v.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .map(move |&(j, dj)| (j, dj + other_at, false));
+    on.chain(near)
 }

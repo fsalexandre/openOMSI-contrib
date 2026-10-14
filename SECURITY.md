@@ -13,8 +13,9 @@ you want.
 
 ## Supported versions
 
-Only the latest release. The game updates itself, so fixes are not backported to older
-builds.
+Only the latest stable release. The game updates itself, so fixes are not backported to
+older builds; a security fix is promoted from beta to stable as soon as it is checked,
+without waiting for the weekly release.
 
 ## What counts
 

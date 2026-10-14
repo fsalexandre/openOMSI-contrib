@@ -88,7 +88,8 @@ is the same thing for an offscreen run.
 
 **Updates.** (Not yet in the desktop launcher and the Android page: offering and installing an
 update was the game's old launcher window's, which is gone, and their update page is still to
-come - until then a new release is downloaded from the releases page. During a session the game
+come - until then a new release is downloaded from the
+[latest release](https://github.com/openOMSI-org/openOMSI/releases/latest) page. During a session the game
 still downloads a newer release and says so, as below.) When the launcher starts it asks
 [github.com/openOMSI-org/openOMSI](https://github.com/openOMSI-org/openOMSI) for the latest release
 and, when there is a newer one, offers it: **Update now** downloads it (checked against the
@@ -97,7 +98,8 @@ again - on Windows `openomsi.exe` and `openomsi-launcher.exe`, on macOS the `ope
 you started, on Linux the program files; mods, content and settings stay. On Android the
 system's installer asks "Do you want to update this app?"; Update replaces openOMSI and starts
 it again, Cancel leaves it as it was. Settings → General → Updates: look for updates at the start (on
-by default), install without asking (off by default), Check now. A folder openOMSI cannot
+by default), install without asking (off by default), the update channel (Stable, the tested
+releases, by default; Beta, every new version before it is tested, for testers), Check now. A folder openOMSI cannot
 write to (Program Files, an app opened straight from Downloads on macOS) is reported with
 what to do. A download that breaks goes on where it stopped (up to four times), a request
 that times out is tried again after 3 and 10 s, and when the GitHub API does not answer (or

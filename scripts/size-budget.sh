@@ -139,7 +139,7 @@ def crate_of(path):
 
 
 def measure():
-    files = subprocess.run(["git", "-C", repo, "ls-files", "*.rs"], capture_output=True, text=True, check=True).stdout.split()
+    files = subprocess.run(["git", "-C", repo, "ls-files", "--", "*.rs", ":(exclude)launcher/patches/**"], capture_output=True, text=True, check=True).stdout.split()
     sizes, fns = {}, {}
     for f in files:
         try:

@@ -44,7 +44,7 @@ exclude = ["launcher/src-tauri"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "AGPL-3.0-only"
 
 # Every dependency that more than one crate uses is declared here once, so an update (by
 # hand or by Dependabot) moves all the crates together and none is left on an older version.

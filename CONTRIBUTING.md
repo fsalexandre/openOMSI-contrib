@@ -13,7 +13,8 @@ Thanks for helping! A few rules keep the project healthy:
 
 ## Files and licences
 
-* **Contributions are MIT**, like the rest of the code and documentation. The few
+* **New contributions are AGPL-3.0-only**, like the project license in `LICENSE`.
+  Historical MIT notices are retained, and earlier MIT releases keep their terms. The few
   third-party files the game ships (the Inter fonts, the Material icons with their
   `LICENSE.txt`) keep their own licences; adding another - map data from OpenStreetMap
   (ODbL), CC-BY-SA pictures, other fonts or icon sets - needs the maintainers' agreement
@@ -56,5 +57,8 @@ See the layout in the [README](README.md#repository-layout) and
 
 ## Releases
 
-Maintainers bump `MAJOR.MINOR` in the `VERSION` file; everything else is automatic - see
-[docs/VERSIONING.md](docs/VERSIONING.md).
+Every merge into `main` is published as a **beta** (a GitHub pre-release) for testers;
+players only get **stable** releases, which are betas the maintainers have tested and
+promoted, about once a week. A published release is never replaced: a fix is a new version.
+Maintainers bump `MAJOR.MINOR` in the `VERSION` file and promote betas; everything else is
+automatic - see [docs/VERSIONING.md](docs/VERSIONING.md).

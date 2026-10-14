@@ -59,7 +59,7 @@ pub fn pack(map: &str, to: &Path) -> Result<Packed> {
     }
     let t0 = Instant::now();
     eprintln!("Listing what {cfg} needs...");
-    let (files, missing) = omsi_lan::mods::session_files(&cfg, None, None, None);
+    let (files, missing) = crate::mods::session_files(&cfg, None, None, None);
     let total: u64 = files.iter().filter_map(|(_, p)| omsi_cfg::vfs::file_size(p)).sum();
     eprintln!("{} files, {:.1} MB (listed in {:.1} s)", files.len(), total as f64 / 1e6, t0.elapsed().as_secs_f64());
     let zip = to.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"));
@@ -170,4 +170,26 @@ mod tests {
         assert_eq!(map_cfg("maps\\Grundorf\\"), "maps/Grundorf/global.cfg");
         assert_eq!(map_cfg("\"maps/Grundorf/global.cfg\""), "maps/Grundorf/global.cfg");
     }
+}
+
+/// `--pack-map <map> --pack-to <to>`: pack it and say what was done on the console.
+pub fn run(map: &str, to: &Path) -> Result<()> {
+    let p = pack(map, to)?;
+    eprintln!(
+        "Packed {}: {} files, {:.1} MB ({} linked, {} copied, {} there already) into {}",
+        map_cfg(map),
+        p.files,
+        p.bytes as f64 / 1e6,
+        p.linked,
+        p.copied,
+        p.kept,
+        to.display()
+    );
+    if !p.missing.is_empty() {
+        eprintln!("{} files the map names are not on this machine (the server and its players lack them too):", p.missing.len());
+        for m in p.missing.iter().take(20) {
+            eprintln!("  {m}");
+        }
+    }
+    Ok(())
 }

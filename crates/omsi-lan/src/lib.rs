@@ -16,6 +16,7 @@ pub mod game;
 pub mod gateway;
 pub mod host;
 pub mod mirror;
+pub mod map_pack;
 pub mod mods;
 pub mod passenger;
 pub mod remote;

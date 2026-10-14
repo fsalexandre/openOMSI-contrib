@@ -141,6 +141,7 @@ pub fn list() -> Answer {
                 "page": l.release.page,
                 "current": v == current,
                 "latest": latest.as_deref() == Some(v),
+                "beta": l.beta,
                 "broken": broken,
             })
         })
