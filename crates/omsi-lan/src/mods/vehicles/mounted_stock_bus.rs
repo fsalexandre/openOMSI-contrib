@@ -17,7 +17,7 @@ fn a_fetched_bus_reads_only_its_own_files() {
         put(e, &omsi_cfg::vfs::read(p).unwrap()).unwrap();
     }
     let (fp, _) = commit(m).unwrap();
-    set(&fp, Wanted::Mounted(PathBuf::new()));
+    viewer().set(&fp, Wanted::Mounted(PathBuf::new()));
     let at = mount(&fp).unwrap();
     let audit = omsi_cfg::vfs::Audit::begin();
     let mt = omsi_sim::VehicleType::load(&root, &bus_file(&fp).unwrap()).unwrap();

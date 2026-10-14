@@ -36,6 +36,7 @@
 
 mod bus_files;
 mod channel;
+pub(crate) mod failure;
 pub mod identity;
 pub mod placeholder;
 mod pieces;
@@ -574,9 +575,8 @@ fn handle(stream: TcpStream, key: &omsi_net::hostkey::HostKey, ready: &Mutex<Opt
     let (send, receive) = keys.finish(session, false, hello[2])?;
     let mut out = SecureWriter::new(out, send);
     let mut input = SecureReader::new(input, receive);
-    let mut incoming = upload::Incoming::default();
-    // (pieces go packed with zstd to a game that says it reads them: `pieces`)
-    let mut zstd = false;
+    // (the players' buses on this connection: `upload::requests`)
+    let mut buses = upload::BusRequests::default();
     loop {
         // (what was answered goes out before the next request is waited for)
         out.flush()?;
@@ -621,23 +621,15 @@ fn handle(stream: TcpStream, key: &omsi_net::hostkey::HostKey, ready: &Mutex<Opt
                     }
                 }
             }
-            // a player's bus for the session (see `upload`)
-            ["OFFER", len] => incoming.offer(&mut input, &mut out, len)?,
-            ["PUT", idx, len] => incoming.put(&mut input, &mut out, idx, len)?,
-            // the same in pieces, each kept as it comes (see `pieces`)
-            ["OFFER2", len] => incoming.offer_pieces(&mut input, &mut out, len)?,
-            ["PUTPIECE", idx, i, raw, codec, wire] => incoming.put_piece(&mut input, &mut out, idx, i, &format!("{raw} {codec} {wire}"))?,
-            ["ZSTD"] => {
-                zstd = true;
-                writeln!(out, "OK")?;
-            }
-            ["PIECE", sha, i] => upload::send_piece(&mut out, sha, i, zstd)?,
-            ["DONE"] => incoming.done(&mut out)?,
-            // a bus by its content, and one of its files (see `vehicles`)
-            ["MANIFEST", fp] => upload::send_manifest(&mut out, fp)?,
-            ["BLOB", sha] => upload::send_blob(&mut out, sha)?,
             ["BYE"] | [] => return out.flush(),
-            _ => writeln!(out, "ERR what")?,
+            // a player's bus for the session, and the others' by their content (`upload`,
+            // `vehicles`): read and checked once (`upload::requests`), then answered
+            words => match upload::Request::parse(words) {
+                Some(Ok(request)) => buses.serve(request, &mut input, &mut out)?,
+                Some(Err(upload::Rejected::Answer(words))) => writeln!(out, "ERR {words}")?,
+                Some(Err(upload::Rejected::End(why))) => return Err(std::io::Error::other(why)),
+                None => writeln!(out, "ERR {}", failure::says::WHAT)?,
+            },
         }
     }
 }

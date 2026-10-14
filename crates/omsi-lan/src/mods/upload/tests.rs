@@ -397,7 +397,7 @@ fn two_versions_of_a_bus_are_kept_side_by_side_by_their_content() {
     }
     // (its .bus is byte for byte the test bus's above: kept once already, not sent again)
     assert_eq!(send_files("Vehicles/SendBus/send.bus", chosen.clone(), host, session, false), Ok(2));
-    assert!(SHOWN.lock().unwrap().as_ref().is_some_and(|s| s.done == s.total && s.total == 70_000 + 13), "the progress reached the end");
+    assert!(notices().progress().is_some_and(|(done, total)| done == total && total == 70_000 + 13), "the progress reached the end");
     assert!(super::super::vehicles::manifest(&VehicleManifest { bus: "Vehicles/SendBus/send.bus".into(), entries: chosen.iter().map(|(r, p)| entry(r, &std::fs::read(p).unwrap())).collect() }.validated().unwrap().fingerprint()).is_some(), "kept by the fingerprint the player works out too");
     // again: the server has it all, nothing goes
     assert_eq!(send_files("Vehicles/SendBus/send.bus", chosen, host, session, true), Ok(0));
@@ -422,7 +422,7 @@ fn two_versions_of_a_bus_are_kept_side_by_side_by_their_content() {
     // switched off: refused
     accept(false);
     let ((raw, _, _), wanted) = offer(host, session, &m1);
-    assert!(no_uploads(&wanted.unwrap_err()));
+    assert!(no_uploads(&crate::mods::failure::Failure::from(wanted.unwrap_err())));
     let _ = raw.shutdown(std::net::Shutdown::Both);
     let _ = std::fs::remove_dir_all(&store_dir);
 }
@@ -443,7 +443,7 @@ fn a_bus_in_a_paint_is_one_fingerprint() {
     assert_eq!(own_fingerprint(bus, &paint(0)), fp);
     assert_eq!(m.entries.len(), sent.len());
     // worked out again from scratch: the same
-    *OWN.lock().unwrap() = None;
+    own_bus().forget();
     assert_eq!(own_manifest(&root, bus, &paint(0), files(0)).unwrap().1, fp);
     // another paint
     let (_, other, _) = own_manifest(&root, bus, &paint(1), files(1)).unwrap();
@@ -496,13 +496,15 @@ fn folders_of_a_bus_and_what_it_points_into() {
 #[test]
 fn the_uploads_hold_so_much_memory_at_most() {
     let _turn = super::super::vehicles::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let all = Held::take(UPLOAD_MEMORY).unwrap();
-    assert!(Held::take(1).is_none(), "one more is told: busy");
+    // (a budget of its own: nothing shared with the other tests)
+    let u = Uploads::default();
+    let all = u.hold(UPLOAD_MEMORY).unwrap();
+    assert!(u.hold(1).is_none(), "one more is told: busy");
     drop(all);
-    assert!(Held::take(1).is_some());
+    assert!(u.hold(1).is_some());
     // a file larger than all of it comes alone
-    let big = Held::take(2 * UPLOAD_MEMORY).unwrap();
-    assert!(Held::take(1).is_none());
+    let big = u.hold(2 * UPLOAD_MEMORY).unwrap();
+    assert!(u.hold(1).is_none());
     drop(big);
     // a request refused is read past (the stream stays in step), never kept
     let mut input: &[u8] = b"0123456789NEXT";

@@ -1113,7 +1113,7 @@ pub fn placeholder_state(pose: &Pose) -> String {
     match crate::mods::vehicles::status(&pose.content) {
         Some(Wanted::Pending(done, total)) if total > 0 => format!("loading their bus: {}%", done * 100 / total),
         // (one still on its way, or a host not reached yet, is asked for again)
-        Some(Wanted::Failed(why)) if !crate::mods::vehicles::coming(&why) => "their bus is not to be had".to_string(),
+        Some(Wanted::Failed(why)) if !why.coming() => "their bus is not to be had".to_string(),
         _ => "loading their bus...".to_string(),
     }
 }
@@ -1748,7 +1748,7 @@ fn remote_type(args: &LanConfig, pose: &Pose) -> Option<RemoteType> {
             match crate::mods::vehicles::want(&args.root, pose.id, &pose.content, &pose.bus, &pose.paint) {
                 Wanted::Local(p) | Wanted::Mounted(p) => Ok(p),
                 Wanted::Pending(..) => Err("being made sure of by its content".to_string()),
-                Wanted::Failed(e) => Err(e),
+                Wanted::Failed(e) => Err(e.to_string()),
             }
         } else {
             remote_bus_file(args, &pose.bus)

@@ -117,36 +117,34 @@ fn host_of(key: std::sync::Arc<omsi_net::hostkey::HostKey>, list: VehicleManifes
 
 #[test]
 fn a_bus_kept_after_a_restart_of_files_kept_before_it_is_served_whole() {
-    let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let store = temp("restart-store");
-    open_for_test(&store);
-    keep_for_days(30);
+    let kept = Buses::default();
+    kept.open_in(&store).unwrap();
     let b = b"[model]\nmodel\\model.cfg\n".to_vec();
     let t = vec![5u8; 4000];
     let files = [(entry("Vehicles/Before/before.bus", &b), b.clone()), (entry("Vehicles/Before/t.dat", &t), t.clone())];
     let m = VehicleManifest { bus: "Vehicles/Before/before.bus".into(), entries: files.iter().map(|f| f.0.clone()).collect() }.validated().unwrap();
     // its files come (or are the server's own), but the bus is not finished...
     for (e, d) in &files {
-        put(e, d).unwrap();
+        kept.put(e, d).unwrap();
     }
     // ...and the server starts again: the files are in the store, no list names them
-    open_for_test(&store);
-    assert!(missing(&m).is_empty(), "the files are there");
-    let (fp, new) = commit(m.clone()).unwrap();
+    kept.open_in(&store).unwrap();
+    assert!(kept.missing(&m).is_empty(), "the files are there");
+    let (fp, new) = kept.commit(m.clone()).unwrap();
     assert!(new);
     for (e, d) in &files {
-        assert_eq!(blob(&e.sha256).as_deref(), Some(d.as_slice()), "{} is served", e.path);
+        assert_eq!(kept.blob(&e.sha256).as_deref(), Some(d.as_slice()), "{} is served", e.path);
     }
-    assert_eq!(manifest(&fp), Some(m));
+    assert_eq!(kept.manifest(&fp), Some(m));
     let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
 fn buses_nobody_uses_go_but_never_one_in_use_a_shared_file_or_one_on_its_way() {
-    let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let store = temp("gc-store");
-    open_for_test(&store);
-    keep_for_days(30);
+    let kept = Buses::default();
+    kept.open_in(&store).unwrap();
     let shared = vec![1u8; 1000];
     let bus = |name: &str, own: &[u8]| -> (VehicleManifest, Vec<(Entry, Vec<u8>)>) {
         let b = format!("[model]
@@ -163,9 +161,9 @@ fn buses_nobody_uses_go_but_never_one_in_use_a_shared_file_or_one_on_its_way() {
     let keep = |name: &str, own: &[u8], days_ago: u64| -> (String, VehicleManifest) {
         let (m, files) = bus(name, own);
         for (e, d) in &files {
-            put(e, d).unwrap();
+            kept.put(e, d).unwrap();
         }
-        let (fp, _) = commit(m.clone()).unwrap();
+        let (fp, _) = kept.commit(m.clone()).unwrap();
         let f = std::fs::OpenOptions::new().write(true).open(store.join("vehicles").join(format!("{fp}.json"))).unwrap();
         f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(days_ago * 86_400 + 3600)).unwrap();
         (fp, m)
@@ -175,55 +173,59 @@ fn buses_nobody_uses_go_but_never_one_in_use_a_shared_file_or_one_on_its_way() {
     let (recent, m_recent) = keep("Recent", &[4u8; 500], 1);
     let (coming, m_coming) = keep("Coming", &[5u8; 500], 40);
     // one is being driven now; one is being sent again (its files held)
-    in_use([driven.as_str()].into_iter());
-    let lease = lease(&m_coming);
-    let c = collect(0, IN_USE);
+    kept.in_use([driven.as_str()].into_iter());
+    let lease = kept.lease(&m_coming);
+    let c = kept.collect(0, IN_USE);
     assert_eq!(c.buses, 1, "only the old one nobody uses");
-    assert!(manifest(&old).is_none() && manifest(&driven).is_some() && manifest(&recent).is_some() && manifest(&coming).is_some());
+    assert!(kept.manifest(&old).is_none() && kept.manifest(&driven).is_some() && kept.manifest(&recent).is_some() && kept.manifest(&coming).is_some());
     // its own file went, the shared one (still used by the others) stayed
-    assert!(blob(&m_old.entries.iter().find(|e| e.path.ends_with("t.dat")).unwrap().sha256).is_none());
-    assert_eq!(blob(&super::super::sha256_of(&shared)), Some(shared.clone()));
+    assert!(kept.blob(&m_old.entries.iter().find(|e| e.path.ends_with("t.dat")).unwrap().sha256).is_none());
+    assert_eq!(kept.blob(&super::super::sha256_of(&shared)), Some(shared.clone()));
     drop(lease);
     // short of room: the least lately used that nobody drives go (here: the one
     // that was on its way, then the recent one) - never the one being driven
-    let c = collect(u64::MAX, IN_USE);
+    let c = kept.collect(u64::MAX, IN_USE);
     assert_eq!(c.buses, 2);
-    assert!(manifest(&coming).is_none() && manifest(&recent).is_none() && manifest(&driven).is_some());
-    assert!(blob(&m_recent.entries.iter().find(|e| e.path.ends_with("t.dat")).unwrap().sha256).is_none());
-    assert_eq!(blob(&super::super::sha256_of(&shared)), Some(shared));
+    assert!(kept.manifest(&coming).is_none() && kept.manifest(&recent).is_none() && kept.manifest(&driven).is_some());
+    assert!(kept.blob(&m_recent.entries.iter().find(|e| e.path.ends_with("t.dat")).unwrap().sha256).is_none());
+    assert_eq!(kept.blob(&super::super::sha256_of(&shared)), Some(shared));
     let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
 fn a_bus_that_keeps_failing_is_given_up_and_one_on_its_way_is_not() {
+    use crate::mods::failure::Failure;
     let s = std::time::Duration::from_secs;
-    assert!(!may_retry("bad list", s(10), 1), "a minute between tries");
-    assert!(may_retry("bad list", s(61), 2));
-    assert!(!may_retry("bad list", s(600), GIVE_UP), "given up");
-    assert!(may_retry("the host says: no such bus", s(6), 50), "a bus on its way is asked for again");
-    assert!(may_retry("no host to ask yet", s(6), 50), "asked once the way to the host is known");
-    assert!(may_retry("cannot reach the host's mods on TCP 127.0.0.1:1: refused", s(16), 50), "a host out of reach is asked again");
-    assert!(!may_retry("cannot reach the host's mods on TCP 127.0.0.1:1: refused", s(6), 50), "not at once");
+    let (bad, out_of_reach) = (Failure::from("bad list"), Failure::from("cannot reach the host's mods on TCP 127.0.0.1:1: refused"));
+    assert!(!may_retry(&bad, s(10), 1), "a minute between tries");
+    assert!(may_retry(&bad, s(61), 2));
+    assert!(!may_retry(&bad, s(600), GIVE_UP), "given up");
+    assert!(may_retry(&Failure::from("the host says: no such bus"), s(6), 50), "a bus on its way is asked for again");
+    assert!(may_retry(&Failure::NoHost, s(6), 50), "asked once the way to the host is known");
+    assert!(may_retry(&out_of_reach, s(16), 50), "a host out of reach is asked again");
+    assert!(!may_retry(&out_of_reach, s(6), 50), "not at once");
     // a host with every connection taken, or a connection that broke off on the way
-    // (the system's words in the player's language): asked again, never given up
-    assert!(may_retry("the host says: busy", s(16), 50));
-    assert!(may_retry("Vehicles/X/t.dds: connection lost: Foi forçado o cancelamento de uma conexão existente pelo host remoto. (os error 10054)", s(16), 50));
+    // (the system's words in the player's language, the file it was for in front):
+    // asked again, never given up
+    assert!(may_retry(&Failure::from("the host says: busy"), s(16), 50));
+    let lost = Failure::ConnectionLost("Foi forçado o cancelamento de uma conexão existente pelo host remoto. (os error 10054)".into()).about("Vehicles/X/t.dds");
+    assert!(may_retry(&lost, s(16), 50));
 }
 
 /// A box made while its bus was being fetched is made again once the bus is here
 /// (`lan::sync_remotes`): only a bus here, mounted or our own, is ready.
 #[test]
 fn a_bus_is_ready_once_mounted_or_our_own() {
-    let fp = "v1-ready-test-0000";
-    assert!(!ready(fp), "never heard of");
-    set(fp, Wanted::Pending(1, 2));
-    assert!(!ready(fp), "on its way");
-    set(fp, Wanted::Mounted(PathBuf::from("/data/x/b.bus")));
-    assert!(ready(fp));
-    set(fp, Wanted::Failed("no".into()));
-    assert!(!ready(fp));
-    set(fp, Wanted::Local(PathBuf::from("/omsi/b.bus")));
-    assert!(ready(fp));
+    let (v, fp) = (Viewer::default(), "v1-ready-test-0000");
+    assert!(!v.ready(fp), "never heard of");
+    v.set(fp, Wanted::Pending(1, 2));
+    assert!(!v.ready(fp), "on its way");
+    v.set(fp, Wanted::Mounted(PathBuf::from("/data/x/b.bus")));
+    assert!(v.ready(fp));
+    v.set(fp, Wanted::Failed("no".into()));
+    assert!(!v.ready(fp));
+    v.set(fp, Wanted::Local(PathBuf::from("/omsi/b.bus")));
+    assert!(v.ready(fp));
 }
 
 #[test]
@@ -268,7 +270,7 @@ fn another_players_paints_come_with_their_bus_and_ours_stay_ours() {
     let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
     let session = key.session();
     super::super::upload::remember_host(host(key.clone(), m.clone(), files), session);
-    fetch(&fp).unwrap();
+    Viewer::default().fetch(&fp).unwrap();
     // the other's bus, as itself: its paint file, its skin
     let at = bus_file(&fp).unwrap();
     let their_dir = omsi_cfg::resolve_path(at.parent().unwrap(), "Texture");
@@ -314,12 +316,12 @@ fn a_fetch_that_broke_off_goes_on_where_it_stopped_whatever_the_size_of_the_file
     let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
     let session = key.session();
     super::super::upload::remember_host(host_of(key.clone(), m.clone(), files.clone(), Version::Zlib, Some(3)), session);
-    assert!(fetch(&fp).is_err());
+    assert!(Viewer::default().fetch(&fp).is_err());
     let kept: usize = m.entries.iter().map(|e| pieces::count(e.size) as usize - missing_pieces(e).len()).sum();
     assert_eq!(kept, 3, "the pieces that came are kept");
     // again: a host that serves only as many pieces as are left is enough
     super::super::upload::remember_host(host_of(key.clone(), m.clone(), files.clone(), Version::Zstd, Some(all - kept)), session);
-    fetch(&fp).unwrap();
+    Viewer::default().fetch(&fp).unwrap();
     let at = bus_file(&fp).unwrap();
     assert_eq!(omsi_cfg::vfs::read(&omsi_cfg::resolve_path(at.parent().unwrap(), "texture/big.dat")).unwrap(), big);
     assert_eq!(omsi_cfg::vfs::read(&omsi_cfg::resolve_path(at.parent().unwrap(), "model/model.cfg")).unwrap(), small);
@@ -344,15 +346,15 @@ fn a_piece_that_is_not_what_it_should_be_never_makes_a_bus() {
     let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
     let session = key.session();
     super::super::upload::remember_host(host(key.clone(), m.clone(), tampered), session);
-    let why = fetch(&fp).unwrap_err();
-    assert!(why.contains("not the file the list names"), "{why}");
+    let why = Viewer::default().fetch(&fp).unwrap_err();
+    assert!(why.to_string().contains("not the file the list names"), "{why}");
     assert!(bus_file(&fp).is_none(), "no bus made of a file that is not its own");
     assert_eq!(missing_pieces(&m.entries[1]).len(), 3, "the pieces of the file that was not it went");
     // from an honest host it comes as it is
     let good: HashMap<String, Vec<u8>> = [&bus, &tex].into_iter().map(|d| (super::super::sha256_of(d), d.clone())).collect();
     let before = SENT_ZSTD.load(std::sync::atomic::Ordering::SeqCst);
     super::super::upload::remember_host(host(key.clone(), m.clone(), good), session);
-    fetch(&fp).unwrap();
+    Viewer::default().fetch(&fp).unwrap();
     assert!(SENT_ZSTD.load(std::sync::atomic::Ordering::SeqCst) > before, "the pieces came packed with zstd");
     let at = bus_file(&fp).unwrap();
     assert_eq!(omsi_cfg::vfs::read(&omsi_cfg::resolve_path(at.parent().unwrap(), "texture/t.dat")).unwrap(), tex);
@@ -380,7 +382,7 @@ fn a_bus_with_a_file_refused_for_what_it_is_is_drawn_without_it() {
     let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
     let session = key.session();
     super::super::upload::remember_host(host(key.clone(), m.clone(), files), session);
-    fetch(&fp).unwrap();
+    Viewer::default().fetch(&fp).unwrap();
     let at = bus_file(&fp).unwrap();
     assert_eq!(omsi_cfg::vfs::read(&omsi_cfg::resolve_path(at.parent().unwrap(), "model/model.cfg")).unwrap(), cfg);
     let held = withheld_of(&fp);
@@ -392,7 +394,7 @@ fn a_bus_with_a_file_refused_for_what_it_is_is_drawn_without_it() {
 }
 
 fn queued(sha: &str) -> bool {
-    RECOMPRESSING.lock().unwrap().queued.contains(sha)
+    buses().recompressing.lock().unwrap().queued.contains(sha)
 }
 
 /// A host packs a file at its smallest once a game that reads zstd asked for it (in the
@@ -426,7 +428,7 @@ fn a_kept_file_goes_packed_at_its_smallest_once_it_has_been_asked_for() {
     // a piece as a game gets it: (codec, bytes on the wire, bytes)
     let ask = |sha: &str, i: u64, zstd: bool| -> (String, u64, Vec<u8>) {
         let mut buf = Vec::new();
-        super::super::upload::send_piece(&mut buf, sha, &i.to_string(), zstd).unwrap();
+        super::super::upload::send_piece(&mut buf, &super::super::upload::Sha256::parse(sha).unwrap(), i, zstd).unwrap();
         let end = buf.iter().position(|b| *b == b'\n').unwrap();
         let head = String::from_utf8(buf[..end].to_vec()).unwrap();
         let (raw, codec, wire) = pieces::head(head.strip_prefix("OK ").unwrap()).unwrap();
@@ -450,10 +452,10 @@ fn a_kept_file_goes_packed_at_its_smallest_once_it_has_been_asked_for() {
     assert_eq!(ask(&sha_n, 0, true).0, "-");
     // a file not kept here queues nothing
     let mut buf = Vec::new();
-    super::super::upload::send_piece(&mut buf, &"0".repeat(64), "0", true).unwrap();
+    super::super::upload::send_piece(&mut buf, &super::super::upload::Sha256::parse(&"0".repeat(64)).unwrap(), 0, true).unwrap();
     assert!(buf.starts_with(b"ERR"));
     assert!(!queued(&"0".repeat(64)));
-    recompress_queued();
+    buses().recompress_queued();
     assert!(!queued(&sha_t) && !queued(&sha_n));
     // packed at its smallest: as small or smaller, the same bytes
     for i in 0..3 {
@@ -474,7 +476,7 @@ fn a_kept_file_goes_packed_at_its_smallest_once_it_has_been_asked_for() {
     assert_eq!(packed_here(), 4);
     let f = std::fs::OpenOptions::new().write(true).open(store.join("vehicles").join(format!("{fp}.json"))).unwrap();
     f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 86_400)).unwrap();
-    assert_eq!(collect(0, IN_USE).buses, 1);
+    assert_eq!(buses().collect(0, IN_USE).buses, 1);
     assert_eq!(packed_here(), 0);
     let _ = std::fs::remove_dir_all(&store);
 }
@@ -492,7 +494,7 @@ fn a_host_of_an_older_version_sends_whole_files() {
     let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
     let session = key.session();
     super::super::upload::remember_host(host_of(key.clone(), m.clone(), files, Version::Blobs, None), session);
-    fetch(&fp).unwrap();
+    Viewer::default().fetch(&fp).unwrap();
     let at = bus_file(&fp).unwrap();
     assert_eq!(omsi_cfg::vfs::read(&omsi_cfg::resolve_path(at.parent().unwrap(), "texture/t.dat")).unwrap(), tex);
     let _ = std::fs::remove_dir_all(&store);
@@ -512,7 +514,7 @@ fn another_players_bus_is_fetched_by_its_content_and_checked() {
     let session = key.session();
     super::super::upload::remember_host(host(key.clone(), m.clone(), files.clone()), session);
     // fetched, kept under its fingerprint, and mounted on its own
-    fetch(&fp).unwrap();
+    Viewer::default().fetch(&fp).unwrap();
     let bus_file = bus_file(&fp).unwrap();
     assert_eq!(omsi_cfg::vfs::read(&omsi_cfg::resolve_path(bus_file.parent().unwrap(), "texture/t.dat")).unwrap(), tex);
     // a host that passes off another bus under that fingerprint is not believed
@@ -520,7 +522,7 @@ fn another_players_bus_is_fetched_by_its_content_and_checked() {
     let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
     let session = key.session();
     super::super::upload::remember_host(host(key.clone(), other.clone(), files.clone()), session);
-    assert!(fetch(&format!("v1-{}", "1".repeat(64))).unwrap_err().contains("another bus"));
+    assert!(Viewer::default().fetch(&format!("v1-{}", "1".repeat(64))).unwrap_err().to_string().contains("another bus"));
     // nor one whose file is not the one its list names
     let mut bad_files = files.clone();
     let tex2 = vec![6u8; 200_000];
@@ -529,7 +531,7 @@ fn another_players_bus_is_fetched_by_its_content_and_checked() {
     let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
     let session = key.session();
     super::super::upload::remember_host(host(key.clone(), m2.clone(), bad_files), session);
-    assert!(fetch(&m2.fingerprint()).unwrap_err().contains("not the file the list names"));
+    assert!(Viewer::default().fetch(&m2.fingerprint()).unwrap_err().to_string().contains("not the file the list names"));
     assert!(manifest(&m2.fingerprint()).is_none(), "a bus that did not come whole is not kept");
     let _ = std::fs::remove_dir_all(&store);
 }
@@ -557,80 +559,77 @@ fn the_same_copy_here_is_known_without_fetching() {
 
 #[test]
 fn the_same_bytes_refused_under_another_name_do_not_cost_a_bus_its_own_file() {
-    let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let store = temp("poison");
-    open_for_test(&store);
+    let kept = Buses::default();
+    kept.open_in(&store).unwrap();
     let b = b"[model]\nreal.cfg\n".to_vec();
     // a player sends a bus file's bytes as a sound: refused (no WAVE), held back as that
     let as_sound = entry("Vehicles/X/a.wav", &b);
-    withhold(&as_sound, "not a WAVE sound");
-    assert!(is_withheld(&as_sound));
+    kept.withhold(&as_sound, "not a WAVE sound");
+    assert!(kept.is_withheld(&as_sound));
     // the bus that has those bytes as its .bus still takes them, and is kept with them
     let bus_file = entry("Vehicles/Real/real.bus", &b);
-    assert!(!is_withheld(&bus_file));
+    assert!(!kept.is_withheld(&bus_file));
     let m = VehicleManifest { bus: "Vehicles/Real/real.bus".into(), entries: vec![bus_file.clone()] }.validated().unwrap();
-    assert_eq!(missing(&m), vec![0]);
-    put(&bus_file, &b).unwrap();
-    assert!(commit(m).is_ok());
+    assert_eq!(kept.missing(&m), vec![0]);
+    kept.put(&bus_file, &b).unwrap();
+    assert!(kept.commit(m).is_ok());
     let _ = std::fs::remove_dir_all(&store);
 }
 
 #[test]
 fn only_a_bus_on_its_way_is_waited_for() {
-    let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let store = temp("on-its-way");
-    open_for_test(&store);
+    // (a store of its own, never opened: nothing is kept, the waiting is all there is)
+    let kept = Buses::default();
     let (announced, made_up) = ("v1-announced", "v1-made-up");
-    announce([announced].into_iter());
+    kept.announce([announced].into_iter());
     let t0 = std::time::Instant::now();
-    assert!(wait_for(made_up, std::time::Duration::from_secs(30)).is_none());
+    assert!(kept.wait_for(made_up, std::time::Duration::from_secs(30)).is_none());
     assert!(t0.elapsed() < ANNOUNCE_GRACE + std::time::Duration::from_millis(1500), "a made-up bus is not waited for");
     let t0 = std::time::Instant::now();
-    assert!(wait_for(announced, std::time::Duration::from_secs(4)).is_none());
+    assert!(kept.wait_for(announced, std::time::Duration::from_secs(4)).is_none());
     assert!(t0.elapsed() >= std::time::Duration::from_millis(3900), "an announced one is");
     // one being sent is waited for too
     let b = b"[model]\nm.cfg\n".to_vec();
     let m = VehicleManifest { bus: "Vehicles/Sent/sent.bus".into(), entries: vec![entry("Vehicles/Sent/sent.bus", &b)] }.validated().unwrap();
-    let _lease = lease(&m);
-    assert!(on_its_way(&m.fingerprint()));
-    *ANNOUNCED.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    let _ = std::fs::remove_dir_all(&store);
+    let _lease = kept.lease(&m);
+    assert!(kept.on_its_way(&m.fingerprint()));
 }
 
 #[test]
 fn a_player_whose_bus_changes_all_the_time_is_drawn_as_a_box() {
-    let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // (a viewer of its own: nothing shared with the other tests, nothing to put back)
+    let v = Viewer::default();
+    assert!(v.driven("anything"), "before any player is known, every bus is driven");
     for k in 0..=CHANGES {
-        assert!(driven_by(7_000_001, &format!("fp{k}")), "change {k}");
+        assert!(v.driven_by(7_000_001, &format!("fp{k}")), "change {k}");
     }
-    assert!(!driven_by(7_000_001, "fp-more"), "one change too many");
+    assert!(!v.driven_by(7_000_001, "fp-more"), "one change too many");
     // another player who keeps their bus is not
-    assert!(driven_by(7_000_002, "steady") && driven_by(7_000_002, "steady"));
+    assert!(v.driven_by(7_000_002, "steady") && v.driven_by(7_000_002, "steady"));
     // only what is driven now is fetched
-    assert!(driven("fp-more") && driven("steady") && !driven("fp0"));
-    *DRIVERS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    assert!(v.driven("fp-more") && v.driven("steady") && !v.driven("fp0"));
 }
 
 #[test]
 fn what_players_send_makes_room_only_of_buses_unused_for_a_day() {
-    let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let store = temp("sent-room");
-    open_for_test(&store);
-    keep_for_days(30);
+    let kept = Buses::default();
+    kept.open_in(&store).unwrap();
     let keep = |name: &str, hours_ago: u64| -> String {
         let b = format!("[model]\n{name}.cfg\n").into_bytes();
         let e = entry(&format!("Vehicles/{name}/{name}.bus"), &b);
-        put(&e, &b).unwrap();
+        kept.put(&e, &b).unwrap();
         let m = VehicleManifest { bus: e.path.clone(), entries: vec![e] }.validated().unwrap();
-        let (fp, _) = commit(m).unwrap();
+        let (fp, _) = kept.commit(m).unwrap();
         let f = std::fs::OpenOptions::new().write(true).open(store.join("vehicles").join(format!("{fp}.json"))).unwrap();
         f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(hours_ago * 3600)).unwrap();
         fp
     };
     let (played, old) = (keep("Played", 2), keep("Old", 50));
-    assert_eq!(collect(u64::MAX, SENT_MAKES_ROOM_OF).buses, 1);
-    assert!(manifest(&played).is_some() && manifest(&old).is_none(), "the bus played two hours ago stays");
+    assert_eq!(kept.collect(u64::MAX, SENT_MAKES_ROOM_OF).buses, 1);
+    assert!(kept.manifest(&played).is_some() && kept.manifest(&old).is_none(), "the bus played two hours ago stays");
     // what this game fetches for its own players makes room of more
-    assert_eq!(collect(u64::MAX, IN_USE).buses, 1);
+    assert_eq!(kept.collect(u64::MAX, IN_USE).buses, 1);
     let _ = std::fs::remove_dir_all(&store);
 }
