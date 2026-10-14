@@ -563,8 +563,10 @@ pub fn share_mods(args: &mut LanConfig, lan: &mut LanSession) {
             // (a player's game hosting a session takes the joining players' buses as a server
             // does, and keeps its own for them: `mods::upload::keep_own`; a server takes them
             // as its server.cfg says)
+            // (OMSI_NO_LAN_UPLOADS: a player who hosts for strangers keeps their disk to
+            // themselves; their own bus is still sent to the others)
             if !args.server {
-                crate::mods::upload::accept(true);
+                crate::mods::upload::accept(!omsi_cfg::flags::OMSI_NO_LAN_UPLOADS.is_set());
             }
             if let (Some(port), Some(key)) = (lan.local_addr().map(|a| a.port()), lan.host_key()) {
                 crate::mods::serve(port, key, &mod_source(args));
@@ -1726,7 +1728,7 @@ fn remote_type(args: &LanConfig, pose: &Pose) -> Option<(Arc<omsi_sim::VehicleTy
         // no fingerprint, an older one: the bus of that path here, as before.)
         let path = if omsi_net::is_fingerprint(&pose.content) {
             use crate::mods::vehicles::Wanted;
-            match crate::mods::vehicles::want(&args.root, &pose.content, &pose.bus, &pose.paint) {
+            match crate::mods::vehicles::want(&args.root, pose.id, &pose.content, &pose.bus, &pose.paint) {
                 Wanted::Local(p) | Wanted::Mounted(p) => Ok(p),
                 Wanted::Pending(..) => Err("being made sure of by its content".to_string()),
                 Wanted::Failed(e) => Err(e),
@@ -2154,6 +2156,16 @@ pub fn tick_send(
         }
     }
     let gone = lan.tick(dt, &mine);
+    // a server that keeps its players' buses: the ones its players announce now are the
+    // ones on their way (`vehicles::wait_for` waits for no other), every second
+    if lan.role == Role::Host && crate::mods::upload::accepting() {
+        static SAID: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+        let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
+        if said.is_none_or(|t| t.elapsed() > Duration::from_secs(1)) {
+            *said = Some(Instant::now());
+            crate::mods::vehicles::announce(lan.peers().map(|p| p.pose.content.as_str()).chain(std::iter::once(mine.content.as_str())).filter(|c| omsi_net::is_fingerprint(c)));
+        }
+    }
     // a server that keeps its players' buses: the ones driven now are in use
     if lan.role == Role::Host && crate::mods::upload::accepting() {
         static SEEN: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);

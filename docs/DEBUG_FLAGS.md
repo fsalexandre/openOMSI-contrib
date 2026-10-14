@@ -269,6 +269,7 @@ effect. On Android, `openOMSI/env.txt` holds `NAME=value` lines that are set bef
 | `OMSI_NO_GUARD` | bool | off | use | guard, launcher-api | No start guard: a start that crashes or hangs is not healed by an update or by going back to the version before. |
 | `OMSI_NO_INTERP` | bool | off | once | lan | The old way without interpolation, for comparing. |
 | `OMSI_NO_LAN_MODS` | bool | off | use | lan | LAN: do not exchange mods. |
+| `OMSI_NO_LAN_UPLOADS` | bool | off | use | lan | LAN: a game hosting a session takes no buses from the players who join. |
 | `OMSI_NO_LIGHT_MAP` | bool | off | use | scene | No night light maps on the tiles (A/B). |
 | `OMSI_NO_MAIN_SPLIT` | bool | off | frame | render | Do not split the main pass's bundles in two. |
 | `OMSI_NO_MATERIAL_SPLINE_BATCHING` | bool | off | use | scene | No batching of splines by material. |

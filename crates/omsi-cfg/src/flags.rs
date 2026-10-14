@@ -352,6 +352,7 @@ flags! {
     OMSI_NO_GUARD: Bool, Switch, Use, "off", "No start guard: a start that crashes or hangs is not healed by an update or by going back to the version before.";
     OMSI_NO_INTERP: Bool, Switch, Once, "off", "The old way without interpolation, for comparing.";
     OMSI_NO_LAN_MODS: Bool, Switch, Use, "off", "LAN: do not exchange mods.";
+    OMSI_NO_LAN_UPLOADS: Bool, Switch, Use, "off", "LAN: a game hosting a session takes no buses from the players who join.";
     OMSI_NO_LIGHT_MAP: Bool, Switch, Use, "off", "No night light maps on the tiles (A/B).";
     OMSI_NO_MAIN_SPLIT: Bool, Switch, Frame, "off", "Do not split the main pass's bundles in two.";
     OMSI_NO_MATERIAL_SPLINE_BATCHING: Bool, Switch, Use, "off", "No batching of splines by material.";

@@ -75,6 +75,47 @@ pub(super) fn serving() -> bool {
     SERVING.load(Ordering::Relaxed)
 }
 
+/// What the uploads of every connection may hold in memory at once (a list, a file sent
+/// whole): a hundred connections each announcing a list of 256 MB, or a file of a GB, took
+/// the server's memory. One that would pass it is told `ERR busy` and comes back; one larger
+/// than all of it (no size is refused) comes when nothing else is held.
+const UPLOAD_MEMORY: u64 = 512 << 20;
+static HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Bytes of `UPLOAD_MEMORY` held by one request, given back when it is done.
+struct Held(u64);
+
+impl Held {
+    fn take(n: u64) -> Option<Held> {
+        HELD.fetch_update(Ordering::AcqRel, Ordering::Acquire, |h| (h + n <= UPLOAD_MEMORY || h == 0).then_some(h + n)).ok().map(|_| Held(n))
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        HELD.fetch_sub(self.0, Ordering::AcqRel);
+    }
+}
+
+/// `len` bytes of the request read and let go (an answer that refuses it keeps the stream in step).
+fn skip(input: &mut impl Read, len: u64) -> std::io::Result<()> {
+    let n = std::io::copy(&mut input.take(len), &mut std::io::sink())?;
+    if n != len {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
+    Ok(())
+}
+
+/// `len` bytes of the request, read as they come (nothing held for bytes that never come).
+fn read_body(input: &mut impl Read, len: u64) -> std::io::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(len.min(1 << 20) as usize);
+    input.take(len).read_to_end(&mut body)?;
+    if body.len() as u64 != len {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
+    Ok(body)
+}
+
 /// Files of a bus that came whole in pieces (`PUTPIECE`), by the bus: its pieces come over
 /// several connections, its DONE on another.
 static CAME: Mutex<Option<HashMap<String, usize>>> = Mutex::new(None);
@@ -125,11 +166,16 @@ impl Incoming {
         let Some(len) = len.parse::<u64>().ok().filter(|l| *l <= 256 << 20) else {
             return Err(std::io::Error::other("bad offer"));
         };
-        let mut body = vec![0u8; len as usize];
-        input.read_exact(&mut body)?;
+        // (nothing kept of a list a server that takes none would refuse anyway)
         if !accepting() || !super::vehicles::is_open() {
+            skip(input, len)?;
             return Ok(Err("this server takes no uploads".into()));
         }
+        let Some(_held) = Held::take(len) else {
+            skip(input, len)?;
+            return Ok(Err("busy".into()));
+        };
+        let body = read_body(input, len)?;
         let Ok(m) = serde_json::from_slice::<VehicleManifest>(&body) else {
             return Ok(Err("bad list".into()));
         };
@@ -197,7 +243,7 @@ impl Incoming {
             Ok(d) => d,
             Err(why) => return writeln!(out, "ERR {}: {why}", e.path),
         };
-        match super::vehicles::put_piece(&e, i, &data) {
+        match super::vehicles::put_piece_sent(&e, i, &data) {
             Ok(whole) => {
                 if whole && self.wanted.remove(&idx) {
                     // (counted for the bus, whichever of its connections the file came on)
@@ -224,8 +270,11 @@ impl Incoming {
         let Some(e) = entry.filter(|e| e.size == len) else {
             return Err(std::io::Error::other("a file that was not asked for"));
         };
-        let mut data = vec![0u8; len as usize];
-        input.read_exact(&mut data)?;
+        let Some(_held) = Held::take(len) else {
+            skip(input, len)?;
+            return writeln!(out, "ERR busy");
+        };
+        let data = read_body(input, len)?;
         self.wanted.remove(&idx);
         if super::sha256_of(&data) != e.sha256 {
             return writeln!(out, "ERR {}: not the file the list names", e.path);
@@ -237,7 +286,7 @@ impl Incoming {
             super::vehicles::withhold(&e, &why);
             return writeln!(out, "ERR {why}");
         }
-        match super::vehicles::put(&e, &data) {
+        match super::vehicles::put_sent(&e, &data) {
             Ok(()) => {
                 self.got += 1;
                 writeln!(out, "OK")
@@ -1108,6 +1157,11 @@ pub(super) fn hashed(files: &[(String, PathBuf)]) -> Vec<Entry> {
                 let mtime = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
                 if let Some((sz, mt, h)) = cache.get(&key) {
                     if *sz == md.len() && *mt == mtime {
+                        // (checked as a file read now is: the hashes are remembered for every
+                        // file a join compares, a program or one too large among them)
+                        if md.len() > super::MAX_FILE || starts_as_program(p) {
+                            return None;
+                        }
                         return Some((Entry { path: rel.clone(), size: md.len(), sha256: h.clone() }, None));
                     }
                 }
@@ -1134,6 +1188,22 @@ pub(super) fn hashed(files: &[(String, PathBuf)]) -> Vec<Entry> {
     }
     super::save_hash_cache(&cache);
     entries
+}
+
+/// Does the plain file `p` start as a program does (`looks_executable`)? One that cannot be
+/// read is taken for one.
+fn starts_as_program(p: &Path) -> bool {
+    let mut head = [0u8; 8];
+    let Ok(mut f) = std::fs::File::open(p) else { return true };
+    let mut n = 0;
+    while n < head.len() {
+        match f.read(&mut head[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(_) => return true,
+        }
+    }
+    super::looks_executable(&head[..n])
 }
 
 /// `a/b/../c` → `a/c`, `/`-separated.
@@ -1660,5 +1730,44 @@ mod tests {
         assert_eq!(owner_folder("Fonts/x.oft"), None);
         assert_eq!(norm("Vehicles/MAN/model/../../Anzeigen/Matrix/x.o3d"), "Vehicles/Anzeigen/Matrix/x.o3d");
         assert_eq!(norm("a\\.\\b//c"), "a/b/c");
+    }
+
+    #[test]
+    fn the_uploads_hold_so_much_memory_at_most() {
+        let _turn = super::super::vehicles::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let all = Held::take(UPLOAD_MEMORY).unwrap();
+        assert!(Held::take(1).is_none(), "one more is told: busy");
+        drop(all);
+        assert!(Held::take(1).is_some());
+        // a file larger than all of it comes alone
+        let big = Held::take(2 * UPLOAD_MEMORY).unwrap();
+        assert!(Held::take(1).is_none());
+        drop(big);
+        // a request refused is read past (the stream stays in step), never kept
+        let mut input: &[u8] = b"0123456789NEXT";
+        skip(&mut input, 10).unwrap();
+        assert_eq!(input, b"NEXT");
+        assert!(read_body(&mut &b"abc"[..], 5).is_err(), "bytes that never come");
+        assert_eq!(read_body(&mut &b"abcdef"[..], 3).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn a_remembered_hash_is_checked_as_a_file_read_now() {
+        let _turn = super::super::vehicles::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = temp("remembered-program");
+        let p = dir.join("tex.dds");
+        std::fs::write(&p, b"MZ\x90\x00 a program called a texture").unwrap();
+        let md = std::fs::metadata(&p).unwrap();
+        let mtime = md.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        // remembered by a join (which hashes whatever it compares)
+        let key = p.to_string_lossy().to_string();
+        let mut cache = super::super::hash_cache();
+        cache.insert(key.clone(), (md.len(), mtime, "ab".repeat(32)));
+        super::super::save_hash_cache(&cache);
+        assert!(hashed(&[("Vehicles/X/tex.dds".to_string(), p.clone())]).is_empty(), "a program never leaves");
+        let mut cache = super::super::hash_cache();
+        cache.remove(&key);
+        super::super::save_hash_cache(&cache);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

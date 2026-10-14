@@ -27,8 +27,8 @@ struct Vehicles {
     /// The size of each kept file by its SHA-256 (what a blob is asked for by).
     sizes: HashMap<String, u64>,
     mounted: HashSet<String>,
-    /// Files refused for what they are (`quarantine`), by SHA-256: why. A bus is kept and
-    /// drawn without them (`withhold`).
+    /// Files refused for what they are (`quarantine`), by their content and kind
+    /// (`held_key`): why. A bus is kept and drawn without them (`withhold`).
     withheld: HashMap<String, String>,
     /// By fingerprint: the files a kept bus is without (`<fp>.withheld.json` beside its list).
     withheld_of: HashMap<String, Vec<Withheld>>,
@@ -102,7 +102,7 @@ fn open_in(dir: &Path) -> Result<(), String> {
         if !held.is_empty() {
             for w in &held {
                 if let Some(e) = m.entries.iter().find(|e| e.path == w.path) {
-                    withheld.insert(e.sha256.clone(), w.why.clone());
+                    withheld.insert(held_key(e), w.why.clone());
                 }
             }
             withheld_of.insert(fp.to_string(), held);
@@ -120,7 +120,7 @@ fn open_in(dir: &Path) -> Result<(), String> {
     log::info!("vehicles: {} buses players sent are kept", found.len());
     *lock() = Some(Vehicles { store, dir: vdir, manifests: found.into_iter().map(|(_, fp, m)| (fp, m)).collect(), sizes, mounted: HashSet::new(), withheld, withheld_of });
     // (what nobody has used for longer than buses are kept goes at once)
-    collect(0);
+    collect(0, IN_USE);
     Ok(())
 }
 
@@ -138,20 +138,30 @@ pub(crate) fn manifest(fp: &str) -> Option<VehicleManifest> {
 pub(super) fn missing(m: &VehicleManifest) -> Vec<usize> {
     let g = lock();
     let Some(v) = g.as_ref() else { return (0..m.entries.len()).collect() };
-    m.entries.iter().enumerate().filter(|(_, e)| v.store.has(e).is_none() && !v.withheld.contains_key(&e.sha256)).map(|(k, _)| k).collect()
+    m.entries.iter().enumerate().filter(|(_, e)| v.store.has(e).is_none() && !v.withheld.contains_key(&held_key(e))).map(|(k, _)| k).collect()
+}
+
+/// What a refused file is held back by: its SHA-256 and the kind of file its name says it is.
+/// `quarantine` judges a file by its name, so the same bytes under another name are another
+/// case: a `.bus` file sent again as a `.wav` (refused: no sound) must not cost the bus its
+/// own `.bus` - a player could otherwise make any bus they know undrawable for everybody.
+fn held_key(e: &Entry) -> String {
+    let name = e.path.rsplit('/').next().unwrap_or("");
+    let ext = name.rsplit_once('.').map(|(_, x)| x.to_ascii_lowercase()).unwrap_or_default();
+    format!("{}.{ext}", e.sha256.to_ascii_lowercase())
 }
 
 /// `e` was refused for what it is (`why`, `quarantine`): a bus is kept and drawn without it -
 /// never with another file in its place - and it is not asked for again.
 pub(super) fn withhold(e: &Entry, why: &str) {
     if let Some(v) = lock().as_mut() {
-        v.withheld.insert(e.sha256.to_ascii_lowercase(), why.to_string());
+        v.withheld.insert(held_key(e), why.to_string());
     }
 }
 
 /// Was `e` refused for what it is (`withhold`)?
 pub(super) fn is_withheld(e: &Entry) -> bool {
-    lock().as_ref().is_some_and(|v| v.withheld.contains_key(&e.sha256.to_ascii_lowercase()))
+    lock().as_ref().is_some_and(|v| v.withheld.contains_key(&held_key(e)))
 }
 
 /// The files the kept bus `fp` is without (`withhold`).
@@ -162,16 +172,19 @@ pub(crate) fn withheld_of(fp: &str) -> Vec<Withheld> {
 /// The files of `m` not kept yet that this machine has itself in the same version (in its
 /// own content or the installation, at the same path) are kept from there: nothing to send.
 /// How many.
+///
+/// A list comes from any player, and names what it likes: one offer at a time compares (a
+/// list of thousands of the server's own paths, sent over a hundred connections at once,
+/// had the server read and hash its whole installation over and over), each file by its size
+/// first and by its hash remembered (`local_sha`) - only a file that is the same is read.
 pub(super) fn adopt_local(m: &VehicleManifest) -> usize {
+    static ONE: Mutex<()> = Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let mut n = 0;
     for k in missing(m) {
         let e = &m.entries[k];
-        let same = omsi_cfg::find_in_roots(&e.path)
-            .filter(|(r, _)| !omsi_cfg::is_sandbox(r))
-            .and_then(|(_, p)| omsi_cfg::vfs::read(&p).ok())
-            .filter(|d| d.len() as u64 == e.size && super::sha256_of(d) == e.sha256);
-        if let Some(d) = same {
-            if put(e, &d).is_ok() {
+        if let Some(d) = own_copy(e) {
+            if put_sent(e, &d).is_ok() {
                 n += 1;
             }
         }
@@ -179,9 +192,55 @@ pub(super) fn adopt_local(m: &VehicleManifest) -> usize {
     n
 }
 
-/// Keep a file (checked against `e` already).
+/// This machine's own file at `e`'s path (in its content or the installation, never a
+/// session's), if it is that file: read only once its size and hash say so.
+fn own_copy(e: &Entry) -> Option<Vec<u8>> {
+    let (_, p) = omsi_cfg::find_in_roots(&e.path).filter(|(r, _)| !omsi_cfg::is_sandbox(r))?;
+    if !local_sha(&p, e.size).is_some_and(|h| h.eq_ignore_ascii_case(&e.sha256)) {
+        return None;
+    }
+    omsi_cfg::vfs::read(&p).ok().filter(|d| d.len() as u64 == e.size && super::sha256_of(d).eq_ignore_ascii_case(&e.sha256))
+}
+
+/// Hashes of this machine's own files, by path: (size, modification time, SHA-256).
+type LocalShas = HashMap<PathBuf, (u64, u64, String)>;
+static LOCAL_SHAS: Mutex<Option<LocalShas>> = Mutex::new(None);
+
+/// The SHA-256 of the local file `p` if it has `size` bytes: nothing is read for another
+/// size, and a plain file's hash is remembered by its size and time.
+fn local_sha(p: &Path, size: u64) -> Option<String> {
+    let Ok(md) = std::fs::metadata(p) else {
+        // (a file in a mounted archive: its size, then its bytes)
+        if omsi_cfg::vfs::file_size(p) != Some(size) {
+            return None;
+        }
+        return omsi_cfg::vfs::read(p).ok().filter(|d| d.len() as u64 == size).map(|d| super::sha256_of(&d));
+    };
+    if !md.is_file() || md.len() != size {
+        return None;
+    }
+    let mtime = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+    if let Some((_, _, h)) = LOCAL_SHAS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|c| c.get(p)).filter(|(s, t, _)| *s == size && *t == mtime) {
+        return Some(h.clone());
+    }
+    let h = super::sha256_of(&std::fs::read(p).ok()?);
+    LOCAL_SHAS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(p.to_path_buf(), (size, mtime, h.clone()));
+    Some(h)
+}
+
+/// Keep a file (checked against `e` already) this game fetched or has itself.
 pub(super) fn put(e: &Entry, data: &[u8]) -> Result<(), String> {
-    make_room(e.size)?;
+    put_making_room(e, data, IN_USE)
+}
+
+/// Keep a file a player sent (checked against `e` already): room is made of buses nobody
+/// has used for a day at least (`SENT_MAKES_ROOM_OF`), never of the ones played lately.
+pub(super) fn put_sent(e: &Entry, data: &[u8]) -> Result<(), String> {
+    put_making_room(e, data, SENT_MAKES_ROOM_OF)
+}
+
+fn put_making_room(e: &Entry, data: &[u8], unused_for: std::time::Duration) -> Result<(), String> {
+    make_room(e.size, unused_for)?;
     let mut g = lock();
     let v = g.as_mut().ok_or("no store")?;
     v.store.put(e, data).map_err(|x| x.to_string())?;
@@ -190,12 +249,15 @@ pub(super) fn put(e: &Entry, data: &[u8]) -> Result<(), String> {
 }
 
 /// The file with that SHA-256, if it is kept here.
+/// (Read and unsealed with the store let go: a file of a GB held every other request up.)
 pub(super) fn blob(sha: &str) -> Option<Vec<u8>> {
     let sha = sha.to_ascii_lowercase();
-    let g = lock();
-    let v = g.as_ref()?;
-    let size = *v.sizes.get(&sha)?;
-    v.store.read(&Entry { path: String::new(), size, sha256: sha }).ok()
+    let (store, size) = {
+        let g = lock();
+        let v = g.as_ref()?;
+        (v.store.clone(), *v.sizes.get(&sha)?)
+    };
+    store.read(&Entry { path: String::new(), size, sha256: sha }).ok()
 }
 
 /// The files served last, unsealed (`served`): a file asked for piece by piece is opened
@@ -215,6 +277,13 @@ pub(super) fn served(sha: &str) -> Option<Arc<Vec<u8>>> {
             c.push_front(hit);
             return Some(data);
         }
+    }
+    // (one file opened at a time: asked for a hundred times at once, each a GB, they were
+    // all read into memory together)
+    static OPENING: Mutex<()> = Mutex::new(());
+    let _one = OPENING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, d)) = SERVED.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(s, _)| *s == sha) {
+        return Some(d.clone());
     }
     let data = Arc::new(blob(&sha)?);
     let mut c = SERVED.lock().unwrap_or_else(|e| e.into_inner());
@@ -331,7 +400,7 @@ fn recompress(sha: &str) -> Option<(u64, u64)> {
 pub(super) fn missing_pieces(e: &Entry) -> Vec<u64> {
     let g = lock();
     let Some(v) = g.as_ref() else { return (0..pieces::count(e.size)).collect() };
-    if v.store.has(e).is_some() || v.withheld.contains_key(&e.sha256) {
+    if v.store.has(e).is_some() || v.withheld.contains_key(&held_key(e)) {
         return Vec::new();
     }
     (0..pieces::count(e.size)).filter(|i| !v.store.has_piece(&e.sha256, *i, pieces::span(e.size, *i).1)).collect()
@@ -340,15 +409,23 @@ pub(super) fn missing_pieces(e: &Entry) -> Vec<u64> {
 /// Keep piece `i` of `e` as it came; once every piece is here the file is checked and kept
 /// whole (`finish`). True when it is.
 pub(super) fn put_piece(e: &Entry, i: u64, data: &[u8]) -> Result<bool, String> {
+    put_piece_making_room(e, i, data, IN_USE)
+}
+
+/// `put_piece` for a piece a player sent: room only of buses unused for a day (`put_sent`).
+pub(super) fn put_piece_sent(e: &Entry, i: u64, data: &[u8]) -> Result<bool, String> {
+    put_piece_making_room(e, i, data, SENT_MAKES_ROOM_OF)
+}
+
+fn put_piece_making_room(e: &Entry, i: u64, data: &[u8], unused_for: std::time::Duration) -> Result<bool, String> {
     if i >= pieces::count(e.size) || data.len() as u64 != pieces::span(e.size, i).1 {
         return Err(format!("{}: not a piece of it", e.path));
     }
-    {
-        let g = lock();
-        let v = g.as_ref().ok_or("no store")?;
-        v.store.put_piece(&e.sha256, i, data).map_err(|x| format!("{}: {x}", e.path))?;
-    }
-    finish(e)
+    // (a piece takes room as a file does: pieces of files never finished filled the disk)
+    make_room(data.len() as u64, unused_for)?;
+    let store = lock().as_ref().ok_or("no store")?.store.clone();
+    store.put_piece(&e.sha256, i, data).map_err(|x| format!("{}: {x}", e.path))?;
+    finish(e, unused_for)
 }
 
 /// One file at a time is put together from its pieces.
@@ -356,21 +433,21 @@ static FINISHING: Mutex<()> = Mutex::new(());
 
 /// `e` put together from its pieces, if they are all here: checked (its SHA-256, no
 /// program, what it says it is), kept whole, its pieces gone. True when it is kept.
-fn finish(e: &Entry) -> Result<bool, String> {
+fn finish(e: &Entry, unused_for: std::time::Duration) -> Result<bool, String> {
     let _one = FINISHING.lock().unwrap_or_else(|x| x.into_inner());
     let count = pieces::count(e.size);
+    // (read with the store let go: a file of a GB held every other request up)
+    let store = lock().as_ref().ok_or("no store")?.store.clone();
     let data = {
-        let g = lock();
-        let v = g.as_ref().ok_or("no store")?;
-        if v.store.has(e).is_some() {
+        if store.has(e).is_some() {
             return Ok(true);
         }
-        if (0..count).any(|i| !v.store.has_piece(&e.sha256, i, pieces::span(e.size, i).1)) {
+        if (0..count).any(|i| !store.has_piece(&e.sha256, i, pieces::span(e.size, i).1)) {
             return Ok(false);
         }
         let mut data = Vec::with_capacity(e.size as usize);
         for i in 0..count {
-            data.extend(v.store.piece(&e.sha256, i, pieces::span(e.size, i).1).map_err(|x| format!("{}: {x}", e.path))?);
+            data.extend(store.piece(&e.sha256, i, pieces::span(e.size, i).1).map_err(|x| format!("{}: {x}", e.path))?);
         }
         data
     };
@@ -390,7 +467,7 @@ fn finish(e: &Entry) -> Result<bool, String> {
         withhold(e, &why);
         return Err(why);
     }
-    put(e, &data)?;
+    put_making_room(e, &data, unused_for)?;
     drop_pieces();
     Ok(true)
 }
@@ -410,7 +487,7 @@ pub(super) fn commit(m: VehicleManifest) -> Result<(String, bool), String> {
     let bus_key = identity::key(&m.bus);
     let mut held = Vec::new();
     for e in m.entries.iter().filter(|e| v.store.has(e).is_none()) {
-        match v.withheld.get(&e.sha256) {
+        match v.withheld.get(&held_key(e)) {
             Some(why) if identity::key(&e.path) != bus_key => held.push(Withheld { path: e.path.clone(), why: why.clone() }),
             _ => return Err(format!("{} has not come", e.path)),
         }
@@ -445,17 +522,43 @@ static ARRIVED: (Mutex<u64>, std::sync::Condvar) = (Mutex::new(0), std::sync::Co
 /// The manifest of `fp`, waiting for it up to `wait` when it is not kept yet - a bus asked
 /// for by another player is most likely on its way here from its own (it sends it under its
 /// loading screen): the answer goes the moment it is kept, not when the asker asks again.
+///
+/// Only a bus on its way is waited for (`on_its_way`): one a player of the session
+/// announces, or one being sent. A player who announced a new made-up fingerprint every
+/// second had every other game wait 90 s for each, a connection held here for each.
 pub(super) fn wait_for(fp: &str, wait: std::time::Duration) -> Option<VehicleManifest> {
-    let until = std::time::Instant::now() + wait;
+    let t0 = std::time::Instant::now();
+    let until = t0 + wait;
     let (count, arrived) = &ARRIVED;
     let mut seen = count.lock().unwrap_or_else(|e| e.into_inner());
     loop {
         if let Some(m) = manifest(fp) {
             return Some(m);
         }
+        // (a moment's grace: the server says its players' buses every second, and a game
+        // may ask for one it heard of a moment before that)
+        if !on_its_way(fp) && t0.elapsed() >= ANNOUNCE_GRACE {
+            return None;
+        }
         let left = until.checked_duration_since(std::time::Instant::now())?;
-        seen = arrived.wait_timeout(seen, left).unwrap_or_else(|e| e.into_inner()).0;
+        seen = arrived.wait_timeout(seen, left.min(std::time::Duration::from_secs(1))).unwrap_or_else(|e| e.into_inner()).0;
     }
+}
+
+const ANNOUNCE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The fingerprints the session's players announce now (`announce`); None before the first.
+static ANNOUNCED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+/// A server's game, every second: the buses its players announce.
+pub(crate) fn announce<'a>(fps: impl Iterator<Item = &'a str>) {
+    *ANNOUNCED.lock().unwrap_or_else(|e| e.into_inner()) = Some(fps.map(str::to_string).collect());
+}
+
+/// Is the bus `fp` on its way here: announced by a player of the session, or being sent
+/// (`lease`)? (Before any player was announced - no game of a session - every one is.)
+fn on_its_way(fp: &str) -> bool {
+    leased(fp) || ANNOUNCED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_none_or(|a| a.contains(fp))
 }
 
 /// Where the bus `fp` can be read: its files under `lan-vehicles/<fp>`, mounted once.
@@ -528,7 +631,7 @@ fn may_retry(why: &str, since: std::time::Duration, fails: u32) -> bool {
 
 /// Is a bus that could not be had for `why` still to come (asked for again, never given up)?
 pub(crate) fn coming(why: &str) -> bool {
-    why.contains("no such bus") || unreached(why)
+    why.contains("no such bus") || why.contains(NOT_DRIVEN) || unreached(why)
 }
 
 /// Did asking fail before the host could answer (no way to it yet, or the connection)?
@@ -553,7 +656,7 @@ pub(crate) fn retry_due(fp: &str) -> bool {
 /// did not have even after waiting for it (`upload::MANIFEST_WAIT`) - asked again soon, the
 /// host waiting again; anything else - in a minute.
 fn retry_after(why: &str) -> std::time::Duration {
-    if why.contains("no such bus") || why.contains("no host to ask") {
+    if why.contains("no such bus") || why.contains("no host to ask") || why.contains(NOT_DRIVEN) {
         std::time::Duration::from_secs(5)
     } else if unreached(why) {
         std::time::Duration::from_secs(15)
@@ -577,6 +680,11 @@ fn set(fp: &str, w: Wanted) {
         _ => 0,
     };
     map.insert(fp.to_string(), (w, std::time::Instant::now(), fails));
+    // (buses that could not be had, long ago: a player who made fingerprints up left one
+    // behind for each)
+    if map.len() > 1024 {
+        map.retain(|_, (w, at, _)| !matches!(w, Wanted::Failed(_)) || at.elapsed() < std::time::Duration::from_secs(600));
+    }
     drop(g);
     // (a stand-in shown for it is made again: see `lan::tick`)
     if ready {
@@ -586,6 +694,36 @@ fn set(fp: &str, w: Wanted) {
 
 /// Downloads of buses under way at once, at most.
 const DOWNLOADS: usize = 3;
+
+/// What a bus nobody here drives any more says (asked for again as soon as one does).
+const NOT_DRIVEN: &str = "no longer driven here";
+
+/// The bus each other player drives (by player): its fingerprint, and when it changed lately.
+type Drivers = HashMap<u32, (String, VecDeque<std::time::Instant>)>;
+static DRIVERS: Mutex<Option<Drivers>> = Mutex::new(None);
+
+/// A player changes bus or paint this many times within `CHANGES_WITHIN` at most.
+const CHANGES: usize = 6;
+const CHANGES_WITHIN: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// `player` drives the bus `fp`: false when the bus has changed too often of late.
+fn driven_by(player: u32, fp: &str) -> bool {
+    let mut g = DRIVERS.lock().unwrap_or_else(|e| e.into_inner());
+    let (now, (was, changes)) = (std::time::Instant::now(), g.get_or_insert_with(HashMap::new).entry(player).or_insert_with(|| (fp.to_string(), VecDeque::new())));
+    while changes.front().is_some_and(|t| now.duration_since(*t) > CHANGES_WITHIN) {
+        changes.pop_front();
+    }
+    if was.as_str() != fp {
+        *was = fp.to_string();
+        changes.push_back(now);
+    }
+    changes.len() <= CHANGES
+}
+
+/// Does some player here drive the bus `fp`? (Each one asked for by `want`.)
+fn driven(fp: &str) -> bool {
+    DRIVERS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_none_or(|d| d.values().any(|(f, _)| f == fp))
+}
 static SLOTS: (Mutex<usize>, std::sync::Condvar) = (Mutex::new(0), std::sync::Condvar::new());
 
 /// One of the `DOWNLOADS` places, held while a bus is fetched.
@@ -647,9 +785,15 @@ fn escapes(at: &Path, root: &Path, reads: &[PathBuf]) -> Vec<PathBuf> {
 /// be loaded from, once that is known for sure - this machine's own copy when it is the same
 /// bus file for file, else the bus fetched from the host by its content. Until then (and when
 /// it cannot be had) the state says how far it is; the work goes on in the background.
-pub(crate) fn want(root: &Path, fp: &str, bus: &str, paint: &str) -> Wanted {
+///
+/// `player` is who drives it: a player whose bus changes more often than a player changes
+/// bus (`driven_by`) is drawn as a box - each made-up fingerprint started a download here.
+pub(crate) fn want(root: &Path, player: u32, fp: &str, bus: &str, paint: &str) -> Wanted {
     if !omsi_net::is_fingerprint(fp) {
         return Wanted::Failed("no fingerprint".into());
+    }
+    if !driven_by(player, fp) {
+        return Wanted::Failed("its bus changes too often".into());
     }
     {
         let mut g = wanted_map();
@@ -743,6 +887,10 @@ fn fetch(fp: &str) -> Result<(), String> {
     let (host, session) = super::upload::host().ok_or("no host to ask")?;
     // (a few buses at a time: the nearest players first come first, the line is not choked)
     let _slot = Slot::take();
+    // (the player may have gone, or changed bus, while this waited for its turn)
+    if !driven(fp) {
+        return Err(NOT_DRIVEN.into());
+    }
     // (the host waits for a bus on its way before it answers: the answer was given up at
     // 25 s while the host still waited for it)
     let (raw, mut out, mut input) = super::open_waiting(host, session, super::upload::MANIFEST_WAIT + std::time::Duration::from_secs(30))?;
@@ -778,11 +926,7 @@ fn fetch(fp: &str) -> Result<(), String> {
     let mut todo = Vec::new();
     for k in missing {
         let e = &m.entries[k];
-        let own = omsi_cfg::find_in_roots(&e.path)
-            .filter(|(r, _)| !omsi_cfg::is_sandbox(r))
-            .and_then(|(_, p)| omsi_cfg::vfs::read(&p).ok())
-            .filter(|d| d.len() as u64 == e.size && super::sha256_of(d) == e.sha256);
-        match own {
+        match own_copy(e) {
             Some(d) => {
                 put(e, &d)?;
                 done += e.size;
@@ -852,7 +996,7 @@ fn fetch_pieces(m: &VehicleManifest, todo: &[usize], host: std::net::SocketAddr,
         }
         // (a file whose every piece came before is put together now)
         if left.is_empty() {
-            finish(e)?;
+            finish(e, IN_USE)?;
         }
         // (a file the bus has twice - the same texture in two folders - is fetched once: its
         // pieces are kept by their content, so the other is whole with it)
@@ -962,6 +1106,12 @@ fn bus_store_lacks(e: &Entry) -> bool {
 const KEEP_FREE: u64 = 3 << 30;
 /// A bus a connected player drives counts as in use for this long after it was seen.
 const IN_USE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// What a player sends makes room only of buses nobody has used for this long: a player
+/// sending big buses of no use pushed the buses played that day out, one after the other.
+const SENT_MAKES_ROOM_OF: std::time::Duration = std::time::Duration::from_secs(86_400);
+/// Pieces of a file left unfinished this long go (its player gone): they took room nothing
+/// counted, kept as long as buses were.
+const PIECES_KEEP: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 
 /// How long a bus nobody has used is kept (`uploads_keep_days` of `server.cfg`).
 static KEEP: Mutex<std::time::Duration> = Mutex::new(std::time::Duration::from_secs(30 * 86_400));
@@ -1036,16 +1186,16 @@ pub(super) struct Collected {
 }
 
 /// Let go of the buses nobody has used for longer than they are kept - and, when `need`
-/// bytes must be freed, of more, the least lately used first, but never one in use now nor a
-/// file an upload under way holds. A bus's list goes before its files (a collection broken off
+/// bytes must be freed, of more, the least lately used first, of those unused for `unused_for`
+/// at least (never one in use now) - never a file an upload under way holds. A bus's list goes before its files (a collection broken off
 /// leaves no list without its files); a file goes only when no bus kept uses it.
-pub(super) fn collect(need: u64) -> Collected {
+pub(super) fn collect(need: u64, unused_for: std::time::Duration) -> Collected {
     let keep = *KEEP.lock().unwrap_or_else(|e| e.into_inner());
     let now = std::time::SystemTime::now();
     let mut g = lock();
     let Some(v) = g.as_mut() else { return Collected::default() };
     // (pieces of a file left unfinished that long - its player gone - go too)
-    let stale = v.store.remove_stale_pieces(keep);
+    let stale = v.store.remove_stale_pieces(keep.min(PIECES_KEEP));
     if stale > 0 {
         log::info!("vehicles: {stale} pieces of files never finished removed");
     }
@@ -1056,7 +1206,7 @@ pub(super) fn collect(need: u64) -> Collected {
     let mut freed = 0u64;
     for (t, fp) in by_age {
         let expired = age(t) > keep;
-        let wanted_room = need > 0 && freed < need && age(t) > IN_USE;
+        let wanted_room = need > 0 && freed < need && age(t) > unused_for.max(IN_USE);
         if !(expired || wanted_room) {
             continue;
         }
@@ -1100,16 +1250,16 @@ pub(super) fn collect(need: u64) -> Collected {
     out
 }
 
-/// Room on the disk for a file of `size`: the buses nobody uses go until there is; an error
-/// only when even then the disk cannot hold it.
-pub(super) fn make_room(size: u64) -> Result<(), String> {
+/// Room on the disk for a file of `size`: the buses nobody has used for `unused_for` go
+/// until there is; an error only when even then the disk cannot hold it.
+pub(super) fn make_room(size: u64, unused_for: std::time::Duration) -> Result<(), String> {
     let Some(dir) = lock().as_ref().map(|v| v.store.dir().to_path_buf()) else { return Ok(()) };
     let free = || super::store::free_space(&dir);
     let Some(have) = free() else { return Ok(()) };
     if have >= size + KEEP_FREE {
         return Ok(());
     }
-    collect(size + KEEP_FREE - have);
+    collect(size + KEEP_FREE - have, unused_for);
     match free() {
         Some(now) if now < size + KEEP_FREE => Err(format!("the server's disk is full ({:.1} GB free)", now as f64 / 1e9)),
         _ => Ok(()),
@@ -1306,7 +1456,7 @@ mod tests {
         // one is being driven now; one is being sent again (its files held)
         in_use([driven.as_str()].into_iter());
         let lease = lease(&m_coming);
-        let c = collect(0);
+        let c = collect(0, IN_USE);
         assert_eq!(c.buses, 1, "only the old one nobody uses");
         assert!(manifest(&old).is_none() && manifest(&driven).is_some() && manifest(&recent).is_some() && manifest(&coming).is_some());
         // its own file went, the shared one (still used by the others) stayed
@@ -1315,7 +1465,7 @@ mod tests {
         drop(lease);
         // short of room: the least lately used that nobody drives go (here: the one
         // that was on its way, then the recent one) - never the one being driven
-        let c = collect(u64::MAX);
+        let c = collect(u64::MAX, IN_USE);
         assert_eq!(c.buses, 2);
         assert!(manifest(&coming).is_none() && manifest(&recent).is_none() && manifest(&driven).is_some());
         assert!(blob(&m_recent.entries.iter().find(|e| e.path.ends_with("t.dat")).unwrap().sha256).is_none());
@@ -1603,7 +1753,7 @@ mod tests {
         assert_eq!(packed_here(), 4);
         let f = std::fs::OpenOptions::new().write(true).open(store.join("vehicles").join(format!("{fp}.json"))).unwrap();
         f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 86_400)).unwrap();
-        assert_eq!(collect(0).buses, 1);
+        assert_eq!(collect(0, IN_USE).buses, 1);
         assert_eq!(packed_here(), 0);
         let _ = std::fs::remove_dir_all(&store);
     }
@@ -1682,6 +1832,86 @@ mod tests {
         assert_eq!(omsi_cfg::vfs::read(&got).unwrap(), omsi_cfg::vfs::read(&path).unwrap());
         assert!(local_copy(&root, &fp, bus, &ty.paint_schemes[2].name).is_err(), "another paint is another bus");
         assert!(local_copy(&root, &format!("v1-{}", "2".repeat(64)), bus, &paint).is_err());
+    }
+
+    #[test]
+    fn the_same_bytes_refused_under_another_name_do_not_cost_a_bus_its_own_file() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let store = temp("poison");
+        open_for_test(&store);
+        let b = b"[model]\nreal.cfg\n".to_vec();
+        // a player sends a bus file's bytes as a sound: refused (no WAVE), held back as that
+        let as_sound = entry("Vehicles/X/a.wav", &b);
+        withhold(&as_sound, "not a WAVE sound");
+        assert!(is_withheld(&as_sound));
+        // the bus that has those bytes as its .bus still takes them, and is kept with them
+        let bus_file = entry("Vehicles/Real/real.bus", &b);
+        assert!(!is_withheld(&bus_file));
+        let m = VehicleManifest { bus: "Vehicles/Real/real.bus".into(), entries: vec![bus_file.clone()] }.validated().unwrap();
+        assert_eq!(missing(&m), vec![0]);
+        put(&bus_file, &b).unwrap();
+        assert!(commit(m).is_ok());
+        let _ = std::fs::remove_dir_all(&store);
+    }
+
+    #[test]
+    fn only_a_bus_on_its_way_is_waited_for() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let store = temp("on-its-way");
+        open_for_test(&store);
+        let (announced, made_up) = ("v1-announced", "v1-made-up");
+        announce([announced].into_iter());
+        let t0 = std::time::Instant::now();
+        assert!(wait_for(made_up, std::time::Duration::from_secs(30)).is_none());
+        assert!(t0.elapsed() < ANNOUNCE_GRACE + std::time::Duration::from_millis(1500), "a made-up bus is not waited for");
+        let t0 = std::time::Instant::now();
+        assert!(wait_for(announced, std::time::Duration::from_secs(4)).is_none());
+        assert!(t0.elapsed() >= std::time::Duration::from_millis(3900), "an announced one is");
+        // one being sent is waited for too
+        let b = b"[model]\nm.cfg\n".to_vec();
+        let m = VehicleManifest { bus: "Vehicles/Sent/sent.bus".into(), entries: vec![entry("Vehicles/Sent/sent.bus", &b)] }.validated().unwrap();
+        let _lease = lease(&m);
+        assert!(on_its_way(&m.fingerprint()));
+        *ANNOUNCED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let _ = std::fs::remove_dir_all(&store);
+    }
+
+    #[test]
+    fn a_player_whose_bus_changes_all_the_time_is_drawn_as_a_box() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for k in 0..=CHANGES {
+            assert!(driven_by(7_000_001, &format!("fp{k}")), "change {k}");
+        }
+        assert!(!driven_by(7_000_001, "fp-more"), "one change too many");
+        // another player who keeps their bus is not
+        assert!(driven_by(7_000_002, "steady") && driven_by(7_000_002, "steady"));
+        // only what is driven now is fetched
+        assert!(driven("fp-more") && driven("steady") && !driven("fp0"));
+        *DRIVERS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    #[test]
+    fn what_players_send_makes_room_only_of_buses_unused_for_a_day() {
+        let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let store = temp("sent-room");
+        open_for_test(&store);
+        keep_for_days(30);
+        let keep = |name: &str, hours_ago: u64| -> String {
+            let b = format!("[model]\n{name}.cfg\n").into_bytes();
+            let e = entry(&format!("Vehicles/{name}/{name}.bus"), &b);
+            put(&e, &b).unwrap();
+            let m = VehicleManifest { bus: e.path.clone(), entries: vec![e] }.validated().unwrap();
+            let (fp, _) = commit(m).unwrap();
+            let f = std::fs::OpenOptions::new().write(true).open(store.join("vehicles").join(format!("{fp}.json"))).unwrap();
+            f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(hours_ago * 3600)).unwrap();
+            fp
+        };
+        let (played, old) = (keep("Played", 2), keep("Old", 50));
+        assert_eq!(collect(u64::MAX, SENT_MAKES_ROOM_OF).buses, 1);
+        assert!(manifest(&played).is_some() && manifest(&old).is_none(), "the bus played two hours ago stays");
+        // what this game fetches for its own players makes room of more
+        assert_eq!(collect(u64::MAX, IN_USE).buses, 1);
+        let _ = std::fs::remove_dir_all(&store);
     }
 }
 

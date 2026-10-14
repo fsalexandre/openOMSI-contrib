@@ -737,6 +737,14 @@ fn own_vehicle_folder(rel: &str, root: &Path) -> bool {
     roots.iter().any(|r| omsi_cfg::vfs::is_dir(&omsi_cfg::resolve_path(r, &folder)))
 }
 
+/// Is `rel` a script (`Scripts/...`) this machine has of its own? The host's comes only
+/// where this machine has none: the session's content is searched before the installation,
+/// so a host's `Scripts/AI_Cars/<stock name>.osc` ran in every AI car of every player who
+/// joined, in place of the game's own.
+fn own_script(rel: &str) -> bool {
+    rel.split('/').next().is_some_and(|top| top.eq_ignore_ascii_case("scripts")) && omsi_cfg::find_in_roots(rel).is_some_and(|(r, _)| !omsi_cfg::is_sandbox(&r))
+}
+
 fn read_reply(input: &mut impl BufRead) -> Result<Option<u64>, String> {
     let mut line = String::new();
     // (the connection closed, the host restarted: asked again soon; a line longer than a reply ends it)
@@ -869,7 +877,7 @@ fn fetch_with(root: &Path, map: &mut String, host: SocketAddr, session: u64, pro
         }
         // a vehicle folder this machine has of its own is never covered by the host's: its
         // paints (`.cti`) and textures stay this player's, also on the bus it drives
-        if own_vehicle_folder(&e.path, root) {
+        if own_vehicle_folder(&e.path, root) || own_script(&e.path) {
             report.kept_own += 1;
             continue;
         }

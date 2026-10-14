@@ -114,7 +114,7 @@ mod tests {
         p.min_bytes = 1;
         let mut b = [0u8; 4096];
         for _ in 0..1000 {
-            p.read(&mut b).unwrap();
+            assert!(p.read(&mut b).unwrap() > 0);
         }
     }
 }

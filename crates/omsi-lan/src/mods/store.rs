@@ -64,6 +64,7 @@ const BLOB: &str = "blob";
 const PIECE: &str = "piece";
 const PACKED: &str = "zpiece";
 
+#[derive(Clone)]
 pub(crate) struct Store {
     dir: PathBuf,
     key: Arc<SealKey>,
