@@ -47,16 +47,18 @@ Every player needs a game with the players' buses by content to send and receive
 
 ## Configuring the server (map, name, traffic)
 
-```powershell
-.\configurar-servidor.ps1
+Name, message, traffic and the number of players are keys of `config/server.cfg`; the
+server takes them at its next start (`docker compose restart`).
+
+To put a map on the server with everything it uses (scenery objects, splines, traffic cars,
+people, ground textures), pack it into the `content` folder beside this file and set `map`
+in `server.cfg`:
+
+```sh
+openomsi.exe --root "<OMSI 2 folder>" --pack-map "<map name>" --pack-to content
 ```
 
-A menu: **1) Change map** lists the maps of your OMSI 2 folder. The chosen one goes to the
-server with everything it uses (scenery objects, splines, traffic cars, people, ground
-textures), into the `content` folder beside this file. Then `server.cfg` is adjusted and the
-server restarted. On the same disk as OMSI the files go in as hard links, taking no space
-again. The other options change the name and message, the traffic and the number of players,
-restart the server and show its status.
+On the same disk as OMSI the files go in as hard links, taking no space again.
 
 The server **does not hand out maps** to the players (`share_maps = 0` in `server.cfg`, the
 default): a big map is several GB and would eat the server's bandwidth. Every player installs

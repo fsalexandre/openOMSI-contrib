@@ -9,7 +9,7 @@ services:
     build:
       context: ../..
       dockerfile: docker/server/Dockerfile
-    image: openomsi-server:custom
+    image: openomsi-server
     container_name: openomsi-server
     restart: unless-stopped
     ports:
@@ -21,7 +21,7 @@ services:
       - "${OMSI_DIR:?set OMSI_DIR in .env to your OMSI 2 folder}:/omsi:ro"
       # server.cfg (written with its defaults on the first start when missing)
       - ./config:/server
-      # maps put on the server (configurar-servidor.ps1): searched before the installation,
+      # maps put on the server (`openomsi --pack-map`): searched before the installation,
       # and passed on to players who join without them
       - ./content:/content
       # the players' buses, kept by their content, and the logs

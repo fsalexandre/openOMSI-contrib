@@ -11,11 +11,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
-# (no .git in the context: the version is given, VERSION's number and "custom")
+# (no .git in the context: the version is given, else VERSION's number)
 ARG OPENOMSI_VERSION=""
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    export OPENOMSI_VERSION="${OPENOMSI_VERSION:-$(tr -d ' \r\n' < VERSION).custom}" \
+    export OPENOMSI_VERSION="${OPENOMSI_VERSION:-$(tr -d ' \r\n' < VERSION)}" \
  && cargo build --locked --release -p omsi-app \
  && mkdir -p /out \
  && cp target/release/openomsi /out/ \
