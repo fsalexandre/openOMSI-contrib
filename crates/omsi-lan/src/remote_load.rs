@@ -35,7 +35,7 @@ const AT_ONCE: usize = 2;
 /// A bus no player drives any more is let go after this long.
 const KEEP: Duration = Duration::from_secs(120);
 /// One that could not be read is tried again after this long.
-const RETRY: Duration = Duration::from_secs(60);
+pub const RETRY: Duration = Duration::from_secs(60);
 
 enum State {
     Reading,

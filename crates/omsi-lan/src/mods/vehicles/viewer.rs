@@ -31,6 +31,8 @@ pub(crate) struct Viewer {
     slots: (Mutex<usize>, std::sync::Condvar),
     /// The buses whose reads from outside their own files were logged already (`audit`).
     told: Mutex<HashSet<String>>,
+    /// By fingerprint: when it was first asked for (`hopeless`).
+    asked: Mutex<HashMap<String, std::time::Instant>>,
 }
 
 pub(super) type Drivers = HashMap<u32, (String, VecDeque<std::time::Instant>)>;
@@ -47,6 +49,10 @@ pub(crate) fn viewer() -> &'static Viewer {
 /// over and over.
 pub(super) const GIVE_UP: u32 = 3;
 pub(super) const RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A bus on its way that has not come this long after it was first asked for is not waited
+/// for any more: another stands in for it (`hopeless`), and it is still asked for.
+pub(super) const FALL_BACK_AFTER: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// Downloads of buses under way at once, at most.
 pub(super) const DOWNLOADS: usize = 3;
@@ -74,6 +80,10 @@ pub(crate) fn retry_due(fp: &str) -> bool {
 
 pub(crate) fn status(fp: &str) -> Option<Wanted> {
     viewer().status(fp)
+}
+
+pub(crate) fn hopeless(fp: &str) -> bool {
+    viewer().hopeless(fp)
 }
 
 pub(crate) fn audit(fp: &str, root: &Path, reads: &[PathBuf]) -> Vec<PathBuf> {
@@ -105,6 +115,28 @@ impl Viewer {
     /// Where the bus `fp` stands, as far as it has been asked for (nothing is started).
     pub(crate) fn status(&self, fp: &str) -> Option<Wanted> {
         self.wanted().get(fp).map(|(w, _, _)| w.clone())
+    }
+
+    /// Is the bus `fp` not to be had as itself, for now: given up (`GIVE_UP` failures that
+    /// are no bus on its way), or not come `FALL_BACK_AFTER` after it was first asked for? A
+    /// player's bus is drawn with another then (`lan::remote_type`), and still asked for in
+    /// the background. A download under way is never hopeless, however long it takes.
+    pub(crate) fn hopeless(&self, fp: &str) -> bool {
+        let since = self.asked.lock().unwrap_or_else(|e| e.into_inner()).get(fp).map(|t| t.elapsed());
+        match self.wanted().get(fp) {
+            Some((Wanted::Failed(why), _, fails)) => (!why.coming() && *fails >= GIVE_UP) || since.is_some_and(|s| s >= FALL_BACK_AFTER),
+            _ => false,
+        }
+    }
+
+    /// `fp` was asked for at `at` (a test's way to have asked long ago).
+    pub(super) fn asked_at(&self, fp: &str, at: std::time::Instant) {
+        let mut asked = self.asked.lock().unwrap_or_else(|e| e.into_inner());
+        // (buses asked for by players who made fingerprints up: the oldest go)
+        if asked.len() > 1024 {
+            asked.retain(|_, t| t.elapsed() < std::time::Duration::from_secs(3600));
+        }
+        asked.entry(fp.to_string()).or_insert(at);
     }
 
     pub(super) fn set(&self, fp: &str, w: Wanted) {
@@ -193,6 +225,7 @@ impl Viewer {
         if !self.driven_by(player, fp) {
             return Wanted::Failed("its bus changes too often".into());
         }
+        self.asked_at(fp, std::time::Instant::now());
         {
             let mut map = self.wanted();
             match map.get(fp) {

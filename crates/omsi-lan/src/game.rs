@@ -128,6 +128,14 @@ pub struct RemoteVehicle {
     shown: (String, String),
     /// Their bus is not here as that bus: a neutral box of its size stands in for it.
     pub stand_in: bool,
+    /// Their bus is not to be had as itself (`mods::vehicles::hopeless`, a game that says no
+    /// fingerprint, or here but not readable): another bus stands in for it, as before there
+    /// were boxes - this machine's bus of that path, else the one our player drives, else the
+    /// first the server offers - and it says so under their name.
+    pub fallback: bool,
+    /// Their own bus is here but could not be read (`remote_load`): when, and its file. It
+    /// is read again after `remote_load::RETRY`, and made again once it reads.
+    read_failed: Option<(Instant, std::path::PathBuf)>,
     /// `omsi_cfg::content_generation` when it was made: a stand-in is made again once new
     /// content came (the player's bus, sent through the server: `mods::upload`).
     made_gen: u64,
@@ -1103,17 +1111,25 @@ pub fn current_paint(args: &LanConfig, v: &omsi_sim::VehicleInstance) -> String 
     }
 }
 
-/// What a box standing for a player's bus says under the player's name (in English, for
-/// the game to translate): how far that bus has come, or why it is not here.
-pub fn placeholder_state(pose: &Pose) -> String {
+/// What a box or another bus standing for a player's bus says under the player's name (in
+/// English, for the game to translate): how far that bus has come, or why it is not here.
+pub fn placeholder_state(rv: &RemoteVehicle) -> String {
     use crate::mods::vehicles::Wanted;
+    if rv.fallback {
+        return "their bus is not to be had: another stands in".to_string();
+    }
+    let pose = &rv.last;
     if !omsi_net::is_fingerprint(&pose.content) {
         return "their bus is not installed here".to_string();
     }
+    if rv.read_failed.is_some() {
+        return "their bus could not be read".to_string();
+    }
     match crate::mods::vehicles::status(&pose.content) {
         Some(Wanted::Pending(done, total)) if total > 0 => format!("loading their bus: {}%", done * 100 / total),
-        // (one still on its way, or a host not reached yet, is asked for again)
-        Some(Wanted::Failed(why)) if !why.coming() => "their bus is not to be had".to_string(),
+        // (one still on its way, or a host not reached yet, is asked for again - but one that
+        // has not come for long is said to be not to be had: never "loading" for ever)
+        Some(Wanted::Failed(why)) if !why.coming() || crate::mods::vehicles::hopeless(&pose.content) => "their bus is not to be had".to_string(),
         _ => "loading their bus...".to_string(),
     }
 }
@@ -1725,25 +1741,36 @@ struct RemoteType {
     ty: Arc<omsi_sim::VehicleType>,
     /// A box stands in for their bus.
     stand_in: bool,
+    /// Another bus stands in for theirs (`RemoteVehicle::fallback`).
+    fallback: bool,
     /// ...because their bus (this file) is being read off the frame (`remote_load`).
     reading: Option<std::path::PathBuf>,
+    /// Their own bus is here but could not be read: this file.
+    read_failed: Option<std::path::PathBuf>,
     /// What reading their bus read (`mods::vehicles::audit`).
     reads: Vec<std::path::PathBuf>,
 }
 
-/// The type a remote player drives - as that player has it - or, while it is not here as
-/// that bus (or a server's `vehicles` list does not allow it, or it is still being read off
-/// the frame: `remote_load`), a stand-in: a neutral box of its size (`mods::placeholder`),
-/// never another bus.
-fn remote_type(args: &LanConfig, pose: &Pose) -> Option<RemoteType> {
+/// The type a remote player drives - as that player has it. While it is on its way here as
+/// that bus (or still being read off the frame: `remote_load`) a neutral box of its size
+/// stands in for it (`mods::placeholder`); once it is not to be had as itself (given up, not
+/// come for long, not readable, a game that says no fingerprint, a bus the server's
+/// `vehicles` list does not allow) another bus does, as before there were boxes
+/// (`fallback_type`), and the box only when there is none.
+fn remote_type(args: &LanConfig, pose: &Pose, player: Option<&omsi_sim::VehicleInstance>) -> Option<RemoteType> {
     let mut reading = None;
+    let mut read_failed = None;
+    let by_content = omsi_net::is_fingerprint(&pose.content);
+    // (asked before it is asked for again below: `want` starts asking anew, and a bus being
+    // asked for is never hopeless)
+    let hopeless_by_now = by_content && crate::mods::vehicles::hopeless(&pose.content);
     let allowed = crate::server_cfg::SERVER_VEHICLES.get().filter(|l| !l.is_empty());
     let loaded = if allowed.is_none_or(|l| crate::server_cfg::allows(l, &pose.bus)) {
         // the bus as its player has it, file for file (`mods::vehicles`): this machine's
         // own copy when it is the same, else the one fetched by its content - never another
         // version of it that happens to have the same path here. (A player whose game says
         // no fingerprint, an older one: the bus of that path here, as before.)
-        let path = if omsi_net::is_fingerprint(&pose.content) {
+        let path = if by_content {
             use crate::mods::vehicles::Wanted;
             match crate::mods::vehicles::want(&args.root, pose.id, &pose.content, &pose.bus, &pose.paint) {
                 Wanted::Local(p) | Wanted::Mounted(p) => Ok(p),
@@ -1761,19 +1788,74 @@ fn remote_type(args: &LanConfig, pose: &Pose) -> Option<RemoteType> {
                 reading = Some(path);
                 Err("being read".to_string())
             }
-            crate::remote_load::Got::Failed(why) => Err(why),
+            crate::remote_load::Got::Failed(why) => {
+                // (their own bus, here: read again after a while - see `lan::tick`)
+                if by_content {
+                    read_failed = Some(path);
+                }
+                Err(why)
+            }
         })
     } else {
         Err("the server does not offer it".to_string())
     };
-    match loaded {
-        Ok((ty, reads)) => Some(RemoteType { ty, stand_in: false, reading: None, reads }),
-        Err(e) => {
-            // never another bus in its place - not ours, not one the server has: a plain box
-            // of its size, until it is here as itself (`mods::placeholder`)
-            log::info!("LAN: player {} drives {:?}, not here as that bus ({e}); a box of its size stands for it", pose.id, pose.bus);
-            crate::mods::placeholder::of_size(&args.root, pose.length, pose.width, pose.height, pose.box_offset).map(|ty| RemoteType { ty, stand_in: true, reading, reads: Vec::new() })
+    let e = match loaded {
+        Ok((ty, reads)) => return Some(RemoteType { ty, stand_in: false, fallback: false, reading: None, read_failed: None, reads }),
+        Err(e) => e,
+    };
+    // not to be had as itself (for now): another bus, as before there were boxes
+    let hopeless = !by_content || read_failed.is_some() || hopeless_by_now;
+    if hopeless && reading.is_none() {
+        match fallback_type(args, pose, player) {
+            Fallback::Ready(ty, which) => {
+                log::info!("LAN: player {} drives {:?}, not to be had here as that bus ({e}); {which} stands in for it", pose.id, pose.bus);
+                return Some(RemoteType { ty, stand_in: false, fallback: true, reading: None, read_failed, reads: Vec::new() });
+            }
+            Fallback::Reading(path) => reading = Some(path),
+            Fallback::None => {}
         }
+    }
+    // on its way (or nothing to stand in): a plain box of its size, until it is here as
+    // itself (`mods::placeholder`)
+    log::info!("LAN: player {} drives {:?}, not here as that bus ({e}); a box of its size stands for it", pose.id, pose.bus);
+    crate::mods::placeholder::of_size(&args.root, pose.length, pose.width, pose.height, pose.box_offset).map(|ty| RemoteType { ty, stand_in: true, fallback: false, reading, read_failed, reads: Vec::new() })
+}
+
+/// What stands in for a player's bus that is not to be had as itself (`remote_type`).
+enum Fallback {
+    /// This bus (and which, for the log).
+    Ready(Arc<omsi_sim::VehicleType>, &'static str),
+    /// One is being read off the frame (`remote_load`): a box meanwhile.
+    Reading(std::path::PathBuf),
+    None,
+}
+
+/// The bus that stands in for a player's that is not to be had as itself - as before there
+/// were boxes: this machine's bus of that path (another version of it, when theirs is known by
+/// its content), else the one our player drives, else on a server the first of the buses its
+/// `vehicles` list allows.
+fn fallback_type(args: &LanConfig, pose: &Pose, player: Option<&omsi_sim::VehicleInstance>) -> Fallback {
+    let read = |path: std::path::PathBuf| match crate::remote_load::get(&args.root, &path, &pose.paint) {
+        crate::remote_load::Got::Ready(ty, _) => Some(Ok(ty)),
+        crate::remote_load::Got::Reading => Some(Err(path)),
+        crate::remote_load::Got::Failed(_) => None,
+    };
+    let allowed = crate::server_cfg::SERVER_VEHICLES.get().filter(|l| !l.is_empty());
+    // (theirs by its path was tried already when theirs says no fingerprint)
+    if omsi_net::is_fingerprint(&pose.content) && allowed.is_none_or(|l| crate::server_cfg::allows(l, &pose.bus)) {
+        match remote_bus_file(args, &pose.bus).ok().and_then(read) {
+            Some(Ok(ty)) => return Fallback::Ready(ty, "this machine's bus of that path"),
+            Some(Err(path)) => return Fallback::Reading(path),
+            None => {}
+        }
+    }
+    if let Some(p) = player {
+        return Fallback::Ready(p.ty.clone(), "the bus our player drives");
+    }
+    match allowed.and_then(|l| l.first()).and_then(|first| remote_bus_file(args, first).ok()).and_then(read) {
+        Some(Ok(ty)) => Fallback::Ready(ty, "the server's first bus"),
+        Some(Err(path)) => Fallback::Reading(path),
+        None => Fallback::None,
     }
 }
 
@@ -1782,14 +1864,17 @@ fn new_remote(
     game: &mut LanGame,
     args: &LanConfig,
     pose: &Pose,
-    _player: Option<&omsi_sim::VehicleInstance>,
+    player: Option<&omsi_sim::VehicleInstance>,
     lan_host: &dyn LanHost,
     clock: Option<&omsi_sim::SimClock>,
 ) -> Option<RemoteVehicle> {
     let made_ready = crate::mods::vehicles::ready(&pose.content);
     let t0 = Instant::now();
     let read_before = crate::remote_load::generation();
-    let RemoteType { ty, stand_in, reading, mut reads } = remote_type(args, pose)?;
+    let RemoteType { ty, stand_in, fallback, reading, read_failed, mut reads } = remote_type(args, pose, player)?;
+    let read_failed = read_failed.map(|path| (Instant::now(), path));
+    // (another bus standing in: none of theirs - its fonts, its reads, its sync table)
+    let theirs = !stand_in && !fallback;
     let t_type = t0.elapsed();
     let made_reading = reading.map(|path| (read_before, path, pose.paint.clone()));
     // (what making it reads besides: a fetched bus should read nothing but its own files)
@@ -1804,7 +1889,7 @@ fn new_remote(
     // (a bus fetched by its content writes its displays with its own fonts, not with this
     // machine's fonts of the same names)
     let fonts_at = match crate::mods::vehicles::status(&pose.content) {
-        Some(crate::mods::vehicles::Wanted::Mounted(_)) if !stand_in => crate::mods::vehicles::mount(&pose.content),
+        Some(crate::mods::vehicles::Wanted::Mounted(_)) if theirs => crate::mods::vehicles::mount(&pose.content),
         _ => None,
     };
     let t1 = Instant::now();
@@ -1812,7 +1897,7 @@ fn new_remote(
         lan_host.remote_vehicle(args, ty, scheme, clock.cloned().unwrap_or_else(|| args.start_clock()), fonts_at.as_deref());
     let t_vehicle = t1.elapsed();
     reads.extend(audit.end());
-    if !stand_in && omsi_net::is_fingerprint(&pose.content) {
+    if theirs && omsi_net::is_fingerprint(&pose.content) {
         crate::mods::vehicles::audit(&pose.content, &args.root, &reads);
     }
     // (with its rear sections: theirs are in the table too)
@@ -1824,13 +1909,13 @@ fn new_remote(
         .iter()
         .map(|q| (DVec3::new(q.x, q.y, q.z), q.heading as f64))
         .collect();
-    let matched = pose.table == table.hash;
+    let matched = pose.table == table.hash && theirs;
     // (what making it cost the frame, when that was much: see `remote_load`)
     if t0.elapsed() > std::time::Duration::from_millis(30) {
         log::info!(
             "LAN: making player {}'s {} took the frame {:.0} ms (its type {:.0} ms, the vehicle {:.0} ms)",
             pose.id,
-            if stand_in { "box" } else { "bus" },
+            if stand_in { "box" } else if fallback { "stand-in bus" } else { "bus" },
             t0.elapsed().as_secs_f64() * 1000.0,
             t_type.as_secs_f64() * 1000.0,
             t_vehicle.as_secs_f64() * 1000.0
@@ -1875,6 +1960,8 @@ fn new_remote(
         hof,
         shown: (String::new(), String::new()),
         stand_in,
+        fallback,
+        read_failed,
         made_gen: omsi_cfg::content_generation(),
         made_ready,
         made_reading,
@@ -1999,7 +2086,7 @@ fn drive_remote(rv: &mut RemoteVehicle, pose: &Pose, dt: f32, exact: bool) {
         rv.vehicle.trigger(if horn { "horn" } else { "horn_off" });
     }
     let t = rv.table.clone();
-    let matched = pose.table == t.hash && !rv.stand_in;
+    let matched = pose.table == t.hash && !rv.stand_in && !rv.fallback;
     let engine = pose.flags & omsi_net::FLAG_ENGINE != 0;
     let electrics = pose.flags & omsi_net::FLAG_ELECTRICS != 0;
     // the AI scripts' inputs: an engine that is off is off, lights as a level (0.5
@@ -2116,7 +2203,7 @@ fn sync_vars(lan: &mut LanSession, game: &mut LanGame, player: Option<&omsi_sim:
     }
     for v in lan.take_vars() {
         let Some(rv) = game.remotes.get_mut(&v.id) else { continue };
-        if rv.stand_in {
+        if rv.stand_in || rv.fallback {
             continue;
         }
         if rv.vars.is_none() {
@@ -2389,6 +2476,11 @@ pub fn tick_receive(
         .map(|p| p.pose.clone())
         .collect();
     for pose in poses {
+        // (a bus another stands in for is still asked for, in the background, when it is time
+        // - the one standing in is not made again each time: only once theirs is here)
+        if game.remotes.get(&pose.id).is_some_and(|rv| rv.fallback && rv.read_failed.is_none()) && omsi_net::is_fingerprint(&pose.content) && crate::mods::vehicles::retry_due(&pose.content) {
+            crate::mods::vehicles::want(&args.root, pose.id, &pose.content, &pose.bus, &pose.paint);
+        }
         // another vehicle than before (the player changed buses), or another paint scheme on
         // it: made again
         if game
@@ -2407,6 +2499,11 @@ pub fn tick_receive(
                     || rv.stand_in && !rv.made_ready && crate::mods::vehicles::ready(&pose.content)
                     // (a box while its bus was read off the frame, when a bus is done)
                     || rv.made_reading.as_ref().is_some_and(|(g, path, paint)| *g != crate::remote_load::generation() && !crate::remote_load::being_read(path, paint))
+                    // (another bus standing in for theirs, once theirs is here)
+                    || rv.fallback && rv.read_failed.is_none() && omsi_net::is_fingerprint(&pose.content) && crate::mods::vehicles::ready(&pose.content)
+                    // (their own bus that could not be read, once it reads: tried again after a
+                    // while, in the background)
+                    || rv.read_failed.as_ref().is_some_and(|(at, path)| at.elapsed() >= crate::remote_load::RETRY && matches!(crate::remote_load::get(&args.root, path, &pose.paint), crate::remote_load::Got::Ready(..)))
             })
             .unwrap_or(false)
         {
@@ -2483,7 +2580,7 @@ pub fn tick_receive(
     // OMSI_TRACE_REMOTE=<file.csv>: where each other player's bus is drawn, every frame
     if let Some(path) = omsi_cfg::flags::OMSI_TRACE_REMOTE.var() {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
             for (id, rv) in game.remotes.iter() {
                 let _ = writeln!(f, "{:.4},{id},{:.3},{:.3},{:.3},{:.2},{}", lan_now(), rv.vehicle.position.x, rv.vehicle.position.y, rv.vehicle.position.z, rv.vehicle.heading, rv.track.has_offset());
             }

@@ -633,3 +633,37 @@ fn what_players_send_makes_room_only_of_buses_unused_for_a_day() {
     assert_eq!(kept.collect(u64::MAX, IN_USE).buses, 1);
     let _ = std::fs::remove_dir_all(&store);
 }
+
+/// A bus that does not come is not waited for for ever: once given up, or not come
+/// `FALL_BACK_AFTER` after it was first asked for, another bus stands in for it (`hopeless`);
+/// a download under way never counts as that, and once the bus is here after all it is ready
+/// - the bus standing in is made again as theirs (`lan::tick`).
+#[test]
+fn a_bus_that_does_not_come_is_stood_in_for_until_it_does() {
+    use crate::mods::failure::Failure;
+    let v = Viewer::default();
+    let Some(long_ago) = std::time::Instant::now().checked_sub(FALL_BACK_AFTER + std::time::Duration::from_secs(1)) else { return };
+    // on its way, asked a moment ago: a box meanwhile, not hopeless
+    let soon = "v1-hopeless-test-asked-now";
+    v.asked_at(soon, std::time::Instant::now());
+    v.set(soon, Wanted::Failed(Failure::NotHereYet));
+    assert!(!v.hopeless(soon));
+    // on its way since long ago and not come: hopeless
+    let late = "v1-hopeless-test-asked-long-ago";
+    v.asked_at(late, long_ago);
+    v.set(late, Wanted::Failed(Failure::NotHereYet));
+    assert!(v.hopeless(late));
+    // asked for again, and its download under way: never hopeless, however long it takes
+    v.set(late, Wanted::Pending(1, 2));
+    assert!(!v.hopeless(late));
+    // it came: ready, the bus standing in goes
+    v.set(late, Wanted::Mounted(PathBuf::from("/data/x/b.bus")));
+    assert!(!v.hopeless(late) && v.ready(late));
+    // a bad list, asked a moment ago: hopeless once given up (`GIVE_UP` times), not before
+    let bad = "v1-hopeless-test-bad-list";
+    v.asked_at(bad, std::time::Instant::now());
+    for k in 1..=GIVE_UP {
+        v.set(bad, Wanted::Failed(Failure::from("bad list")));
+        assert_eq!(v.hopeless(bad), k >= GIVE_UP, "failure {k}");
+    }
+}

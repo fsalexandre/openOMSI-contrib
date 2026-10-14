@@ -5,8 +5,9 @@
 //! players each bot sees and what the server sends them all (the bytes they receive).
 //!   cargo run --release -p omsi-net --example load_bots -- 127.0.0.1:27015 30 600 493655,2979715 "Vehicles/MAN_SD200/MAN_SD80.bus;Vehicles/MAN_SD200/MAN_SD77.bus"
 //! A bus given as `path@v1-...` is announced by that fingerprint: the server draws the bus it
-//! keeps by that content (one a player sent), as it does for a real player; `path#paint`
-//! drives it in that paint. The start may say `x,y,z,heading` (degrees): the bots line up
+//! keeps by that content (one a player sent), as it does for a real player; `path~paint`
+//! drives it in that paint (`~`, not `#`: a bus file name may start with `#`); `name=path...`
+//! names the bot that drives it (else `bot00`...). The start may say `x,y,z,heading` (degrees): the bots line up
 //! one behind the other in that direction, 16 m apart, at that height; a sixth argument
 //! `stand` keeps them there instead of following the AI cars. `trail:<player>` hides them
 //! under the map until that player has driven far enough, then parks them along the way the
@@ -46,10 +47,15 @@ fn main() {
         // one more every 2 s (thirty at once would be no players' way of coming)
         if bots.len() < n && joined.elapsed() >= Duration::from_secs(2) {
             let i = bots.len();
-            let name = format!("bot{i:02}");
+            // (`name=` before a bus names the bot that drives it - what it tests, say)
+            let given = &buses[i % buses.len()];
+            let (name, given) = match given.split_once('=').filter(|(n, _)| !n.is_empty() && !n.contains(['/', '\\'])) {
+                Some((n, b)) => (n.to_string(), b.to_string()),
+                None => (format!("bot{i:02}"), given.clone()),
+            };
             let lan = LanSession::join_addr(addrs.clone(), None, &name, WorldInfo::default()).expect("join");
             // (a few metres apart, as buses at a stop)
-            let (spec, paint) = buses[i % buses.len()].rsplit_once('#').map(|(b, p)| (b.to_string(), p.to_string())).unwrap_or_else(|| (buses[i % buses.len()].clone(), String::new()));
+            let (spec, paint) = given.rsplit_once('~').map(|(b, p)| (b.to_string(), p.to_string())).unwrap_or_else(|| (given.clone(), String::new()));
             let (bus, content) = spec.split_once('@').map(|(b, f)| (b.to_string(), f.to_string())).unwrap_or_else(|| (spec.clone(), String::new()));
             // (in a row along `heading`, the first a little ahead of the start: a player
             // who starts there is not inside one of them)

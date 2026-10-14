@@ -45817,6 +45817,10 @@ _version: 2
   pt: "ônibus indisponível"
 "their bus is not installed here":
   pt: "ônibus não instalado aqui"
+"their bus is not to be had: another stands in":
+  pt: "ônibus indisponível: outro no lugar"
+"their bus could not be read":
+  pt: "não foi possível ler o ônibus"
 "Host's mods: looking what is needed...":
   pt: "Mods do anfitrião: verificando o que é necessário..."
 "Host's mods could not be downloaded; playing with what is installed here":
