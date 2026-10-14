@@ -51,6 +51,12 @@ def swift_texts():
     return texts
 
 
+def write(strings):
+    rows = [json.dumps(k, ensure_ascii=False) + ": " + json.dumps(v, ensure_ascii=False, separators=(",", ":")) for k, v in strings.items()]
+    with open(OUT, "w", encoding="utf-8") as f:
+        f.write('{\n  "sourceLanguage": "en",\n  "strings": {\n    ' + ",\n    ".join(rows) + '\n  },\n  "version": "1.0"\n}\n')
+
+
 def main():
     table = read_yml(YML)
     used = swift_texts()
@@ -60,7 +66,7 @@ def main():
         if not tr:
             continue
         strings[text] = {"localizations": {APPLE.get(l, l): {"stringUnit": {"state": "translated", "value": v}} for l, v in sorted(tr.items())}}
-    json.dump({"sourceLanguage": "en", "strings": strings, "version": "1.0"}, open(OUT, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    write(strings)
     langs = sorted({l for s in strings.values() for l in s["localizations"]})
     print(f"{len(strings)} of {len(used)} texts translated, {len(langs)} languages: {' '.join(langs)}")
 

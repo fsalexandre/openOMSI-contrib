@@ -46,7 +46,9 @@ jobs:
         env:
           PR: ${{ github.event.pull_request.number }}
         run: echo "version=$(sh scripts/version.sh)${PR:+-pr$PR}" >> "$GITHUB_OUTPUT"
-      - run: echo "### openOMSI ${{ steps.v.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+      - env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: echo "### openOMSI $VERSION" >> "$GITHUB_STEP_SUMMARY"
 
   windows:
     needs: version

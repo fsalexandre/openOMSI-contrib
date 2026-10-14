@@ -396,6 +396,20 @@ impl App {
         let vr_active = self.xr.vr.is_some();
         #[cfg(not(windows))]
         let vr_active = false;
+        let mirrors_shown = self.settings.mirror_size != 0
+            && self.settings.mirror_refresh != "off"
+            && (self.cam.in_cab || self.player.as_ref().is_some_and(|p| (p.vehicle.position - cam.position).length() < 12.0));
+        self.gfx.sim_view.people.mirror_hz = if vr_active {
+            None
+        } else if !mirrors_shown {
+            Some(0.0)
+        } else if self.settings.mirror_refresh == "every" || (self.settings.mirror_hud_every_frame && self.gfx.mirror_hud.active()) {
+            None
+        } else if self.settings.mirror_refresh == "full" {
+            Some(MIRROR_MAX_HZ_FULL)
+        } else {
+            Some(MIRROR_MAX_HZ_ECO)
+        };
         // With `mirror_hud_every_frame` the mirror panels in the cab (Ctrl+M) are drawn every
         // frame, whatever the refresh setting, seen in the glass or not: a driving aid on the
         // screen, not a small picture far off. The other mirrors take their turns below without

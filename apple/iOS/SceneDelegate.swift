@@ -22,15 +22,15 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         item.setTitleTextAttributes([.font: Theme.uiFont(10, .medium)], for: .normal)
         UINavigationBar.appearance().titleTextAttributes = [.font: Theme.uiFont(17, .semibold)]
         UIBarButtonItem.appearance().setTitleTextAttributes([.font: Theme.uiFont(17)], for: .normal)
+        store.open()
         let window = UIWindow(windowScene: scene)
-        let root = UIHostingController(rootView: LauncherRoot().environment(store).preferredColorScheme(.dark))
+        let root = LauncherHost(rootView: AnyView(LauncherRoot().environment(store).preferredColorScheme(.dark)))
         root.view.backgroundColor = UIColor(Theme.bg)
         window.rootViewController = root
         window.backgroundColor = UIColor(Theme.bg)
         window.makeKeyAndVisible()
         self.window = window
         GameHost.shared.launcherWindow = window
-        store.open()
         // (`OMSI_APPLE_ORIENT=landscape|portrait`: the screen turned so, for looking at either
         // layout on a Simulator without a person to turn it)
         if let o = ProcessInfo.processInfo.environment["OMSI_APPLE_ORIENT"] {
@@ -47,5 +47,14 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func sceneDidBecomeActive(_ scene: UIScene) {
         GameHost.shared.store.tick()
+    }
+}
+
+final class LauncherHost: UIHostingController<AnyView> {
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return .all }
+        let store = GameHost.shared.store
+        guard store.onboarding else { return .landscape }
+        return store.onboardingStep == 2 ? .allButUpsideDown : .portrait
     }
 }

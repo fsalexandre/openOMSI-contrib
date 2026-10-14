@@ -182,7 +182,8 @@ openOMSI/
 
 ## Contributing
 
-Issues and pull requests are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and pull requests are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md); how the project is
+run, reviewed and released is in [GOVERNANCE.md](GOVERNANCE.md).
 
 ## Support
 

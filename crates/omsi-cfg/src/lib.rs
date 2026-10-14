@@ -34,6 +34,7 @@ pub mod radio;
 pub mod panic_guard;
 pub mod vfs;
 pub mod install_search;
+pub mod copied_install;
 mod walk;
 use walk::{pop_within, resolve_existing};
 pub use install_search::find_original_install;

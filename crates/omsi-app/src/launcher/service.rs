@@ -126,6 +126,7 @@ fn serve(rx: std::sync::mpsc::Receiver<Value>, reply: Reply) {
         let f = |k: &str, d: f64| req.get(k).and_then(Value::as_f64).unwrap_or(d);
         match req.get("cmd").and_then(Value::as_str).unwrap_or("") {
             "look" => {
+                let _ = omsi_launcher_lib::content_dir();
                 let root = omsi_launcher_lib::root_dir().unwrap_or_default();
                 showroom.want(Look { root, map: s("map"), bus: s("bus"), paint: s("paint"), weather: s("weather"), time: f("time", 540.0) as i32, date: s("date") });
                 send(&id, json!({ "ok": true }), &[]);

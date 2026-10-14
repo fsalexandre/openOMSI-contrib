@@ -554,7 +554,7 @@ fn every_way_of_standing_puts_the_hands_where_it_should() {
     for (way, check) in [
         (Idle::Clasped, (|w: Vec3, _s: f32| w.y > 0.08) as fn(Vec3, f32) -> bool),
         (Idle::Behind, |w, _| w.y < -0.05),
-        (Idle::Crossed, |w, _| w.y > 0.1 && w.z > 1.1),
+        (Idle::Crossed, |w, s| w.y > 0.1 && w.z > 1.1 && w.x * s > 0.0),
         (Idle::Phone, |w, _| w.y > 0.1 && w.z > 1.0),
     ] {
         let mut p = Pose::new(3);
@@ -577,4 +577,41 @@ fn every_way_of_standing_puts_the_hands_where_it_should() {
     let posed = p.bones(&r);
     let side = if p.style[2] > 0.0 { 1 } else { 0 };
     assert!(posed.wrist[side].x * SIDE[side] > 0.2 && posed.wrist[side].z > 0.85, "hand on the hip at {:?}", posed.wrist[side]);
+}
+
+#[test]
+fn a_standing_rider_keeps_the_hands_down() {
+    let r = rig();
+    let mut p = Pose::new(3);
+    (p.idle_from, p.idle_to) = (Idle::Hang, Idle::Hang);
+    let input = PoseInput { hold: 1.0, ..Default::default() };
+    for _ in 0..200 {
+        p.advance(&r, &input, 1.0 / 60.0);
+    }
+    let posed = p.bones(&r);
+    for side in 0..2 {
+        assert!(posed.wrist[side].z < r.shoulder[side].z, "wrist {side} at {:?}", posed.wrist[side]);
+    }
+}
+
+#[test]
+fn changing_the_way_of_standing_keeps_the_hands_out_of_the_body() {
+    let r = rig();
+    for (from, to) in [(Idle::Behind, Idle::Clasped), (Idle::Behind, Idle::Phone), (Idle::Clasped, Idle::Behind), (Idle::Phone, Idle::Behind)] {
+        let mut p = Pose::new(3);
+        (p.idle_from, p.idle_to, p.idle_t) = (from, from, 1e9);
+        for _ in 0..120 {
+            p.advance(&r, &PoseInput::default(), 1.0 / 60.0);
+        }
+        (p.idle_from, p.idle_to, p.idle_mix) = (from, to, 0.0);
+        for _ in 0..90 {
+            p.advance(&r, &PoseInput::default(), 1.0 / 60.0);
+            let posed = p.bones(&r);
+            for side in 0..2 {
+                let w = posed.wrist[side];
+                let inside = w.x.abs() < 0.12 && w.y.abs() < 0.08 && w.z > r.hip[side].z - 0.05 && w.z < r.shoulder[side].z;
+                assert!(!inside, "{from:?} to {to:?}: wrist {side} at {w:?}, mix {}", p.idle_mix);
+            }
+        }
+    }
 }

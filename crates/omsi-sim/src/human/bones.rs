@@ -407,8 +407,8 @@ impl Pose {
         pitch
     }
 
-    /// Where a hand goes and how its elbow points: hanging, on the lap, reaching for the desk,
-    /// holding the rail or on the steering wheel.
+    /// Where a hand goes and how its elbow points: hanging, on the lap, reaching for the desk
+    /// or on the steering wheel.
     #[allow(clippy::too_many_arguments)]
     fn arm_target(&self, rig: &Rig, posed: &Posed, side: usize, s: f32, sh_at: Vec3, hang_wrist: Vec3, hang_pole: Vec3, pelvis_q: Quat, sit: f32) -> (Vec3, Vec3) {
         // seated: hands on the thighs
@@ -431,7 +431,7 @@ impl Pose {
                     Idle::Hang => return None,
                     Idle::Clasped => (Vec3::new(s * 0.035, 0.17, -0.07) * sc, Vec3::new(s, -0.3, -0.6)),
                     Idle::Behind => (Vec3::new(s * 0.04, -0.17, -0.02) * sc, Vec3::new(s, 0.3, -0.5)),
-                    Idle::Crossed => (Vec3::new(-s * 0.11 * sc, 0.21 * sc, up - 0.24 * sc + if side == 1 { 0.035 } else { 0.0 }), Vec3::new(s, -0.25, -0.35)),
+                    Idle::Crossed => (Vec3::new(s * 0.05 * sc, 0.21 * sc, up - 0.24 * sc + if side == 1 { 0.035 } else { 0.0 }), Vec3::new(s, -0.25, -0.35)),
                     Idle::HandOnHip if (side == 1) == (self.style[2] > 0.0) => (Vec3::new(s * (rig.hip[1].x.abs() + 0.13 * sc), -0.02 * sc, 0.07 * sc), Vec3::new(s, -0.6, 0.1)),
                     Idle::HandOnHip => return None,
                     Idle::Phone if side == 1 => (Vec3::new(0.06 * sc, 0.27 * sc, up - 0.31 * sc), Vec3::new(s, -0.5, -1.0)),
@@ -442,8 +442,17 @@ impl Pose {
             let blend = |w: Idle| way(w).unwrap_or((target, pole));
             let (fa, fp) = blend(self.idle_from);
             let (ta, tp) = blend(self.idle_to);
-            let m = smoothstep(0.0, 1.0, self.idle_mix);
-            let (it, ip) = (fa.lerp(ta, m), fp.lerp(tp, m));
+            let through_body = (self.idle_from == Idle::Behind) != (self.idle_to == Idle::Behind) && way(self.idle_from).is_some() && way(self.idle_to).is_some();
+            let (it, ip) = if !through_body {
+                let m = smoothstep(0.0, 1.0, self.idle_mix);
+                (fa.lerp(ta, m), fp.lerp(tp, m))
+            } else if self.idle_mix < 0.5 {
+                let m = smoothstep(0.0, 0.5, self.idle_mix);
+                (fa.lerp(target, m), fp.lerp(pole, m))
+            } else {
+                let m = smoothstep(0.5, 1.0, self.idle_mix);
+                (target.lerp(ta, m), pole.lerp(tp, m))
+            };
             target = target.lerp(it, still);
             pole = pole.lerp(ip, still);
         }
@@ -457,30 +466,6 @@ impl Pose {
                     * v.length().min((rig.upper_arm + rig.forearm) * 0.96);
             target = target.lerp(reach_to, r);
             pole = pole.lerp(Vec3::new(0.6, -0.3, -1.0), r);
-        }
-        if self.hold > 0.0 && !(side == 1 && self.reach > 0.3) {
-            let h = smoothstep(0.0, 1.0, self.hold);
-            let hold_side = if self.style[2] > 0.0 { 1 } else { 0 };
-            if side == hold_side {
-                let reach = rig.upper_arm + rig.forearm;
-                // the handrail over the aisle, or a pole for those who cannot reach it
-                let rail = 1.8;
-                let grip = if rig.shoulder[side].z + reach * 0.97 >= rail {
-                    Vec3::new(
-                        s * (rig.shoulder[1].x + 0.05),
-                        rig.shoulder[1].y + 0.1,
-                        rail + self.body_floor,
-                    )
-                } else {
-                    Vec3::new(
-                        s * 0.2 * rig.scale,
-                        0.28 * rig.scale,
-                        rig.shoulder[1].z - 0.2 * rig.scale + self.body_floor,
-                    )
-                };
-                target = target.lerp(grip, h);
-                pole = pole.lerp(Vec3::new(s, -0.2, -0.5), h);
-            }
         }
         if self.grip > 0.0 {
             // on the steering wheel: the elbows down and a little out

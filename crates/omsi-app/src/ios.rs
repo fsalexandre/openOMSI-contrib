@@ -17,7 +17,7 @@ use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use winit::event_loop::EventLoopProxy;
-use winit::platform::ios::WindowAttributesExtIOS;
+use winit::platform::ios::{ValidOrientations, WindowAttributesExtIOS};
 
 /// The scene the Swift app connected (its windows are where the game's window goes).
 static SCENE_READY: AtomicBool = AtomicBool::new(false);
@@ -204,7 +204,8 @@ fn new_window(event_loop: &ActiveEventLoop) -> Option<Arc<Window>> {
         // second swipe, and the home bar keeps out of the picture)
         .with_prefers_home_indicator_hidden(true)
         .with_prefers_status_bar_hidden(true)
-        .with_preferred_screen_edges_deferring_system_gestures(winit::platform::ios::ScreenEdge::ALL);
+        .with_preferred_screen_edges_deferring_system_gestures(winit::platform::ios::ScreenEdge::ALL)
+        .with_valid_orientations(if crate::apple::is_phone() { ValidOrientations::Landscape } else { ValidOrientations::LandscapeAndPortrait });
     let window = match event_loop.create_window(attrs) {
         Ok(w) => Arc::new(w),
         Err(e) => {

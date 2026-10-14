@@ -11,13 +11,13 @@
 //!
 //! [`Pose`] is the per-person animation state, advanced every frame by [`Pose::advance`]
 //! from a [`PoseInput`] (where the person stands, how fast they move, whether they sit,
-//! pay, hold on or look at something); [`Pose::bones`] turns it into bone transforms and
+//! pay, brace or look at something); [`Pose::bones`] turns it into bone transforms and
 //! [`skin`] deforms a mesh with them. Walking is a speed-driven gait with planted feet: a
 //! foot on the floor stays where it was put (in the frame of the floor it stands on - the
 //! ground or a bus) and the legs reach it by two-bone IK, so a stride always matches the
 //! ground speed and nothing slides; the swinging foot flies to where the body will be when
 //! it lands. The same stepping carries standing people through turns and shuffles, and the
-//! arms reach the cash desk or a handrail by IK as well.
+//! arms reach the cash desk by IK as well.
 
 use anyhow::{Context, Result};
 use glam::{Affine3A, DVec2, DVec3, Mat3A, Quat, Vec2, Vec3, Vec3A};
@@ -150,7 +150,7 @@ pub struct PoseInput<'a> {
     /// Extra forward lean towards the grips (degrees): a driver whose wheel is far off leans
     /// to it from the seat instead of leaving it.
     pub grip_lean: f32,
-    /// Hold on to a handrail (0 … 1).
+    /// Steadied against the bus's sway, standing in it (0 … 1).
     pub hold: f32,
     /// Acceleration of the floor under the person (a moving bus), model frame, m/s².
     pub sway: Vec2,

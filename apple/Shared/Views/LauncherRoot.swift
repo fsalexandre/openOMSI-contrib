@@ -18,6 +18,7 @@ struct LauncherRoot: View {
                     DesktopLauncher(railOnly: geo.size.width < 1040)
                 }
             }
+            .accessibilityHidden(store.onboarding)
         }
         .font(.inter(14))
         .foregroundStyle(Theme.text)
@@ -29,6 +30,14 @@ struct LauncherRoot: View {
             }
         }
         .animation(.easeOut(duration: 0.15), value: store.starting)
+        #if os(iOS)
+        .overlay {
+            if store.onboarding {
+                Onboarding().transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.25), value: store.onboarding)
+        #endif
         .sheet(item: Bindable(store).picker) { p in
             Group {
                 switch p {

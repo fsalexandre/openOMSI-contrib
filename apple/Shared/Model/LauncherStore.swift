@@ -76,6 +76,8 @@ final class LauncherStore {
     /// Start was pressed: the game is on its way (an iPhone: until its window is in front).
     var starting = false
     var ready = false
+    var onboarding = false
+    var onboardingStep = 0
 
     private var timer: Timer?
     private var lastTick = Date()
@@ -100,6 +102,9 @@ final class LauncherStore {
             MainActor.assumeIsolated { self?.tick() }
         }
         if snapshot.root_ok == false { page = .setup }
+        #if os(iOS)
+        onboarding = ready && !snapshot.root_ok && snapshot.config.root.isEmpty
+        #endif
         debugScript()
     }
 
@@ -111,10 +116,14 @@ final class LauncherStore {
         let env = ProcessInfo.processInfo.environment
         if let p = env["OMSI_APPLE_PAGE"] {
             let parts = p.split(separator: ":").map(String.init)
+            if parts.first != "onboarding" { onboarding = false }
             switch parts.first {
             case "tab": phoneTab = parts.count > 1 ? parts[1] : "drive"
             case "picker": picker = parts.count > 1 ? DrivePicker(rawValue: parts[1]) : nil
             case "sheet": phoneSheet = parts.count > 1 ? PhoneSheet(rawValue: parts[1]) : nil
+            case "onboarding":
+                onboarding = true
+                onboardingStep = parts.count > 1 ? Int(parts[1]) ?? 0 : 0
             default:
                 if let pg = Page(rawValue: parts[0]) {
                     page = pg
@@ -282,6 +291,37 @@ final class LauncherStore {
                 self.overviewLoading = false
             }
         }
+    }
+
+    func closeOnboarding() {
+        onboarding = false
+        onboardingStep = 0
+    }
+
+    enum GameLook {
+        case found, waiting, missing([String]), failed(String)
+    }
+
+    nonisolated static func findGame(at path: String?) -> GameLook {
+        do {
+            let data = try Bridge.call("find_root", path.map { ["path": $0] } ?? [:])
+            let r = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            if r["found"] as? Bool == true { return .found }
+            guard let m = r["missing"] as? [String], !m.isEmpty else { return .waiting }
+            return .missing(m)
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    func lookForGame(at path: String? = nil) async -> GameLook {
+        let r = await Task.detached(priority: .utility) { LauncherStore.findGame(at: path) }.value
+        switch r {
+        case .found: tick()
+        case .failed(let e): say(e, error: true)
+        default: break
+        }
+        return r
     }
 
     /// The game ended (an iPhone, an iPad): the launcher is in front again.

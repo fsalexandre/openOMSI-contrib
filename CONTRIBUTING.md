@@ -11,6 +11,18 @@ Thanks for helping! A few rules keep the project healthy:
 * `cargo test --workspace` and `cargo build --release` must pass (CI checks all platforms).
 * Code style: `rustfmt` defaults, comments explain *why*.
 
+## Pull requests
+
+1. Work on a branch of your own (of your fork), never on `main`, and open a pull request
+   against `main`. Unfinished work can be opened as a draft.
+2. Fill in the template: what the player notices, how to test it, what could break.
+3. The checks run on every push, and test builds for Windows, macOS, Linux and Android are
+   linked in a comment, so anyone can try the change before it is merged.
+4. One maintainer other than the author approves it, and it is merged. Some parts need a
+   second review: see [GOVERNANCE.md](GOVERNANCE.md).
+5. Once merged, it is in the next **beta** (a merge marked `[skip ci]` is not released), and
+   players get it with the next stable release.
+
 ## Files and licences
 
 * **New contributions are AGPL-3.0-only**, like the project license in `LICENSE`.
@@ -60,5 +72,5 @@ See the layout in the [README](README.md#repository-layout) and
 Every merge into `main` is published as a **beta** (a GitHub pre-release) for testers;
 players only get **stable** releases, which are betas the maintainers have tested and
 promoted, about once a week. A published release is never replaced: a fix is a new version.
-Maintainers bump `MAJOR.MINOR` in the `VERSION` file and promote betas; everything else is
-automatic - see [docs/VERSIONING.md](docs/VERSIONING.md).
+Maintainers bump `MAJOR.MINOR` in the `VERSION` file (in a pull request) and promote betas;
+everything else is automatic - see [docs/VERSIONING.md](docs/VERSIONING.md).

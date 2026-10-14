@@ -57,3 +57,23 @@ updates:
       actions:
         patterns:
           - "*"
+
+  - package-ecosystem: cargo
+    directory: /launcher/src-tauri
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    groups:
+      launcher-crates:
+        update-types:
+          - minor
+          - patch
+      launcher-majors:
+        update-types:
+          - major
+    ignore:
+      - dependency-name: "tauri"
+      - dependency-name: "tauri-*"
+      - dependency-name: "glib"

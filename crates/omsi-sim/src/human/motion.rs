@@ -462,9 +462,9 @@ impl Pose {
         self.vel = input.velocity;
     }
 
-    /// The hands on their way to the cash desk, a grip or a hold, and back.
+    /// The hands on their way to the cash desk or a grip, and back.
     fn ease_hands(&mut self, input: &PoseInput, seated: bool, dt: f32) {
-        // reaching for the cash desk, holding on
+        // reaching for the cash desk
         match input.reach {
             Some(r) if !seated => {
                 // the hand moves on to a new target, it does not jump there

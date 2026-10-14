@@ -109,11 +109,13 @@ pub struct Updater {
     pub dismissed_version: Option<String>,
     /// A game ran last frame (the launcher installs once it has ended).
     pub game_was_running: bool,
+    checked_beta: Option<bool>,
+    check_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Default for Updater {
     fn default() -> Self {
-        Updater { status: Arc::new(Mutex::new(Status::Idle)), dismissed: false, checked_once: false, auto_started: false, relaunched: false, updated: None, last_check: None, dismissed_version: None, game_was_running: false }
+        Updater { status: Arc::new(Mutex::new(Status::Idle)), dismissed: false, checked_once: false, auto_started: false, relaunched: false, updated: None, last_check: None, dismissed_version: None, game_was_running: false, checked_beta: None, check_generation: Arc::default() }
     }
 }
 
@@ -134,14 +136,18 @@ impl Updater {
     pub fn check(&mut self) {
         self.checked_once = true;
         self.last_check = Some(std::time::Instant::now());
-        if matches!(self.status(), Status::Checking | Status::Downloading { .. } | Status::Downloaded(_) | Status::Installing(_) | Status::WaitingForInstaller(_) | Status::Restarting(_)) {
+        let beta = beta_channel();
+        let switched = self.checked_beta.is_some_and(|b| b != beta);
+        if check_waits(&self.status(), switched) {
             return;
         }
+        self.checked_beta = Some(beta);
         self.dismissed = false;
-        self.set(Status::Checking);
         let status = self.status.clone();
+        let generation = self.check_generation.clone();
+        let mine = start_check(&status, &generation);
         std::thread::spawn(move || {
-            let s = match latest() {
+            let s = match latest_on(beta) {
                 Ok(Some(r)) => Status::Available(r),
                 Ok(None) => Status::UpToDate,
                 Err(e) => {
@@ -149,8 +155,12 @@ impl Updater {
                     Status::Failed(format!("Could not check for updates: {e}"))
                 }
             };
-            log::info!("update check: {s:?}");
-            *lock(&status) = s;
+            let said = format!("{s:?}");
+            if finish_check(&status, &generation, mine, s) {
+                log::info!("update check: {said}");
+            } else {
+                log::info!("update check: a newer look replaced this one ({said})");
+            }
         });
     }
 
@@ -346,11 +356,38 @@ fn short_error(e: &ureq::Error) -> String {
 
 /// The latest release when it is newer than this build and has a file for this platform.
 pub fn latest() -> anyhow::Result<Option<Release>> {
+    latest_on(beta_channel())
+}
+
+fn start_check(status: &Mutex<Status>, generation: &std::sync::atomic::AtomicU64) -> u64 {
+    let mut s = lock(status);
+    *s = Status::Checking;
+    generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+fn finish_check(status: &Mutex<Status>, generation: &std::sync::atomic::AtomicU64, mine: u64, result: Status) -> bool {
+    let mut s = lock(status);
+    let newest = generation.load(std::sync::atomic::Ordering::SeqCst) == mine && matches!(*s, Status::Checking);
+    if newest {
+        *s = result;
+    }
+    newest
+}
+
+fn check_waits(status: &Status, switched: bool) -> bool {
+    match status {
+        Status::Downloading { .. } | Status::Installing(_) | Status::WaitingForInstaller(_) | Status::Restarting(_) => true,
+        Status::Checking | Status::Downloaded(_) => !switched,
+        _ => false,
+    }
+}
+
+fn latest_on(beta: bool) -> anyhow::Result<Option<Release>> {
     if STORE_BUILD {
         return Ok(None);
     }
     let url = omsi_cfg::flags::OMSI_UPDATE_URL.var().map(str::to_string).unwrap_or_else(|| LATEST_API.to_string());
-    if url == LATEST_API && beta_channel() {
+    if url == LATEST_API && beta {
         return match fetch_text(NEWEST_API).and_then(|t| Ok(serde_json::from_str::<serde_json::Value>(&t)?)) {
             Ok(v) => newest_of(&v, current_version(), &crate::recovery::listed_broken()),
             Err(e) => {
@@ -1239,6 +1276,33 @@ mod tests {
         assert_eq!(stable_only, [("0.3.5".to_string(), false)]);
         let with_betas: Vec<(String, bool)> = releases_of(&list, true).into_iter().map(|l| (l.release.version, l.beta)).collect();
         assert_eq!(with_betas, [("0.3.7".to_string(), true), ("0.3.6".to_string(), true), ("0.3.5".to_string(), false)]);
+    }
+
+    #[test]
+    fn a_look_waits_for_the_one_running_unless_the_channel_changed() {
+        let r = Release { version: "0.3.7".into(), page: String::new(), notes: String::new(), asset_name: String::new(), asset_url: String::new(), size: 0, sha256: None };
+        for switched in [false, true] {
+            assert!(check_waits(&Status::Downloading { release: r.clone(), done: 0, total: 1 }, switched));
+            assert!(check_waits(&Status::Installing(r.clone()), switched));
+            assert!(!check_waits(&Status::Idle, switched));
+            assert!(!check_waits(&Status::UpToDate, switched));
+            assert!(!check_waits(&Status::Available(r.clone()), switched));
+        }
+        assert!(check_waits(&Status::Checking, false));
+        assert!(check_waits(&Status::Downloaded(r.clone()), false));
+        assert!(!check_waits(&Status::Checking, true));
+        assert!(!check_waits(&Status::Downloaded(r.clone()), true));
+
+        let status = Mutex::new(Status::Idle);
+        let generation = std::sync::atomic::AtomicU64::new(0);
+        let old = start_check(&status, &generation);
+        let new = start_check(&status, &generation);
+        assert!(!finish_check(&status, &generation, old, Status::Available(r.clone())));
+        assert_eq!(lock(&status).clone(), Status::Checking);
+        assert!(finish_check(&status, &generation, new, Status::UpToDate));
+        assert_eq!(lock(&status).clone(), Status::UpToDate);
+        assert!(!finish_check(&status, &generation, new, Status::Available(r)));
+        assert_eq!(lock(&status).clone(), Status::UpToDate);
     }
 
     #[test]

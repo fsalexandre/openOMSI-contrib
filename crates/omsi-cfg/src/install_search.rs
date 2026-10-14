@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-const NAMES: &[&str] = &["OMSI 2", "OMSI 2 Original", "Omsi 2", "OMSI2", "omsi2", "OMSI 2 Steam Edition", "OMSI"];
+pub const NAMES: &[&str] = &["OMSI 2", "OMSI 2 Original", "Omsi 2", "OMSI2", "omsi2", "OMSI 2 Steam Edition", "OMSI"];
 
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)

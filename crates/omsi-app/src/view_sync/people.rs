@@ -58,6 +58,7 @@ pub(crate) struct PeopleView {
     pub(crate) sync_frame: u32,
     /// Animation choice for this session, refreshed on Android in-process launches.
     pub(crate) enhanced_poses: bool,
+    pub(crate) mirror_hz: Option<f32>,
     /// The people are drawn with the avatars of "Character models: High quality" (this
     /// session's choice; see `avatars`).
     pub(crate) avatars: bool,
@@ -89,6 +90,7 @@ impl PeopleView {
             frame: PeopleFrame::default(),
             sync_frame: 0,
             enhanced_poses: animation::enabled(),
+            mirror_hz: None,
             avatars: avatars::enabled(),
             last_sync: 0.0,
             pose_stats: (0, 0, 0.0, 0.0),
@@ -423,6 +425,7 @@ pub(crate) struct PersonView {
     /// Frames since the last pose and where the person stood then (the
     /// feet of a mesh posed a frame ago stay on the floor when it is drawn there).
     since_posed: u32,
+    since_posed_secs: f32,
     posed_at: (DVec3, f64),
     /// The interior light as drawn: it follows the bus's over a moment (stepping through
     /// the door, people lit up and went dark again from one frame to the next).
@@ -514,8 +517,14 @@ impl PeopleView {
         let mut states: Vec<PersonView> = frame.people.iter().map(|p| self.people.remove(&p.id).unwrap_or_default()).collect();
         let mut due = std::mem::take(&mut self.due);
         due.clear();
+        let mirror_every = match self.mirror_hz {
+            None => 1,
+            Some(hz) if hz > 0.0 => ((1.0 / hz) / sdt.max(1e-3) + 0.05).floor().max(1.0) as u32,
+            Some(_) => 2,
+        };
         for (k, (p, st)) in frame.people.iter().zip(states.iter_mut()).enumerate() {
             st.since_posed = st.since_posed.saturating_add(1);
+            st.since_posed_secs += sdt;
             let d = p.position + DVec3::Z * 0.9 - from;
             let dist = d.length();
             let visible = match eye {
@@ -524,10 +533,10 @@ impl PeopleView {
             };
             // everybody the eye can make out is posed every frame: a pose every other
             // frame at 12-30 m moved walkers in steps and made planted feet shiver
-            // (within 30 m everybody, seen or not: the mirrors show the people behind the
-            // bus, who were posed every twelfth frame and moved in jerks there)
-            let every = if dist < 30.0 {
+            let every = if dist < 30.0 && visible {
                 1
+            } else if dist < 30.0 {
+                mirror_every
             } else if !visible {
                 12
             } else if dist < 45.0 {
@@ -560,7 +569,7 @@ impl PeopleView {
         let pose_one = |(p, st): &mut (&PersonFrame, &mut PersonView)| {
             // the type drawn: the person's avatar, else the content's own
             let ty = st.avatar.clone().unwrap_or_else(|| p.ty.clone());
-            let dt = (sdt * st.since_posed.max(1) as f32).min(0.25);
+            let dt = st.since_posed_secs.max(sdt).min(0.25);
             // Preserve the OMSI-original pose unless the enhanced A/B mode is requested.
             let bones = if enhanced && !p.puppet {
                 animation::bones(p, &ty, st, dt, world, &buses)
@@ -652,6 +661,7 @@ impl PeopleView {
                 }
                 st.skinned = true;
                 st.since_posed = 0;
+                st.since_posed_secs = 0.0;
                 st.posed_at = (p.position + st.glide_world, p.heading);
             }
             // riders go with their bus; on the ground a mesh not posed this frame goes on

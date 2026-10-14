@@ -20,6 +20,7 @@ extern "C" {
     fn openomsi_swift_haptic(ms: u32);
     fn openomsi_swift_open_url(url: *const c_char);
     fn openomsi_swift_set_clipboard(text: *const c_char) -> i32;
+    fn openomsi_swift_is_phone() -> i32;
     /// The game window's safe area in pixels: left, top, right, bottom.
     fn openomsi_swift_safe_insets(out: *mut f32);
 }
@@ -87,4 +88,8 @@ pub(crate) fn safe_insets() -> (f32, f32, f32, f32) {
     // SAFETY: four writable f32s
     unsafe { openomsi_swift_safe_insets(v.as_mut_ptr()) };
     (v[0], v[1], v[2], v[3])
+}
+
+pub(crate) fn is_phone() -> bool {
+    unsafe { openomsi_swift_is_phone() != 0 }
 }

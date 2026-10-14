@@ -12,6 +12,9 @@ on:
       - "crates/omsi-render/tests/rt_smoke.rs"
       - ".github/workflows/rt_check.yml"
 
+permissions:
+  contents: read
+
 jobs:
   vulkan:
     name: Vulkan (lavapipe)

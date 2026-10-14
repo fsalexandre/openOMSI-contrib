@@ -1,8 +1,8 @@
 //! What the enhanced (procedural) pose of a person reads of the simulation's state: whether
 //! they sit, walk, pay or stand, where the seat and the hand reaching out are, how far the
-//! seat lifts the model, whether they hold the rail. Taken with the person into the view's
-//! snapshot (`crate::view_events::PersonFrame`), so that the posing never reads the
-//! simulation itself.
+//! seat lifts the model, whether they are steadied against the sway. Taken with the person
+//! into the view's snapshot (`crate::view_events::PersonFrame`), so that the posing never
+//! reads the simulation itself.
 
 use super::*;
 use crate::human::Activity;
@@ -18,15 +18,15 @@ pub struct PoseFacts {
     pub reach: Option<Vec3>,
     /// The model's `[seatheight]` over the physical seat height (sitting), m.
     pub floor_lift: f32,
-    /// 1 when a standing rider holds the rail.
+    /// 1 for a standing rider, steadied against the sway.
     pub hold: f32,
     /// A seated person's anchor over the floor their feet are sought at: `[seatheight]`
     /// minus the seat's height (m); None: the feet are at the anchor.
     pub seated_level: Option<f64>,
 }
 
-/// Only riders assigned a standing place should hold a pole. Queued and walking
-/// passengers must keep their hands free to use the doors and ticket machines.
+/// Only riders standing still at their standing place are steadied against the sway: queued,
+/// walking and paying passengers are not.
 pub fn grip_for_standing_rider(inside: bool, assigned_standing: bool, walking: bool, reaching: bool) -> f32 {
     if inside && assigned_standing && !walking && !reaching { 1.0 } else { 0.0 }
 }
@@ -104,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn only_stationary_standing_riders_hold_the_rail() {
+    fn only_stationary_standing_riders_are_steadied() {
         assert_eq!(grip_for_standing_rider(true, true, false, false), 1.0);
         assert_eq!(grip_for_standing_rider(true, false, false, false), 0.0);
         assert_eq!(grip_for_standing_rider(true, true, true, false), 0.0);

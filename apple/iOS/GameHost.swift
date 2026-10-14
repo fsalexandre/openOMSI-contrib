@@ -145,6 +145,11 @@ func openomsiSwiftSafeInsets(_ out: UnsafeMutablePointer<Float>) {
     }
 }
 
+@_cdecl("openomsi_swift_is_phone")
+func openomsiSwiftIsPhone() -> Int32 {
+    MainActor.assumeIsolated { UIDevice.current.userInterfaceIdiom == .phone ? 1 : 0 }
+}
+
 @_cdecl("openomsi_swift_set_clipboard")
 func openomsiSwiftSetClipboard(_ text: UnsafePointer<CChar>) -> Int32 {
     UIPasteboard.general.string = String(cString: text)
@@ -165,6 +170,13 @@ enum Platform {
 
     static func openURL(_ s: String) {
         if let u = URL(string: s) { UIApplication.shared.open(u) }
+    }
+
+    @MainActor
+    static func updateLauncherOrientation(turn: Bool) {
+        guard UIDevice.current.userInterfaceIdiom == .phone, let host = GameHost.shared.launcherWindow?.rootViewController else { return }
+        host.setNeedsUpdateOfSupportedInterfaceOrientations()
+        if turn { GameHost.shared.scene?.requestGeometryUpdate(.iOS(interfaceOrientations: host.supportedInterfaceOrientations)) }
     }
 
     /// A folder or an archive chosen in the system's document picker.
