@@ -533,3 +533,45 @@ fn a_remembered_hash_is_checked_as_a_file_read_now() {
     super::super::save_hash_cache(&cache);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The upload memory budget covers what a connection keeps and what it builds: the offer it
+/// was given (for the connection's life) and an `OFFER2`'s plan of pieces (while it is built
+/// and sent). A plan that would pass the budget is told `ERR busy`; nothing of an offer is
+/// held once its connection is gone.
+#[test]
+fn an_offer_and_its_plan_are_held_against_the_memory_budget() {
+    let _turn = super::super::vehicles::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let store_dir = temp("budget-store");
+    super::super::vehicles::open_for_test(&store_dir);
+    accept(true);
+    // ten files of a GB each (claimed: nothing is sent) and the bus file
+    let mut entries: Vec<Entry> = (0..10u64).map(|k| Entry { path: format!("Vehicles/Budget/t{k}.dat"), size: super::super::MAX_FILE, sha256: format!("{:064x}", k + 1) }).collect();
+    entries.push(entry("Vehicles/Budget/b.bus", b"[model]\nmodel.cfg\n"));
+    let m = VehicleManifest { bus: "Vehicles/Budget/b.bus".into(), entries };
+    let body = serde_json::to_vec(&m).unwrap();
+    let busy = format!("ERR {}", crate::mods::failure::says::BUSY);
+    // a connection with its offer kept: the budget is not all free while it lives
+    let mut inc = Incoming::default();
+    let mut out = Vec::new();
+    inc.offer(&mut &body[..], &mut out, body.len() as u64).unwrap();
+    assert!(out.starts_with(b"OK"), "{}", String::from_utf8_lossy(&out));
+    assert!(uploads().hold(UPLOAD_MEMORY).is_none(), "the kept offer is held against the budget");
+    drop(inc);
+    drop(uploads().hold(UPLOAD_MEMORY).expect("all of it back once the connection is gone"));
+    // the budget nearly all taken: an OFFER2 whose plan (ten files of a GB, 10 240 pieces)
+    // would pass it is told busy instead of being built
+    let most = uploads().hold(UPLOAD_MEMORY - (64 << 10)).unwrap();
+    let mut inc = Incoming::default();
+    let mut out = Vec::new();
+    inc.offer_pieces(&mut &body[..], &mut out, body.len() as u64).unwrap();
+    assert!(String::from_utf8_lossy(&out).starts_with(&busy), "{}", String::from_utf8_lossy(&out));
+    drop(inc);
+    drop(most);
+    // with the budget free the same plan is built and sent
+    let mut inc = Incoming::default();
+    let mut out = Vec::new();
+    inc.offer_pieces(&mut &body[..], &mut out, body.len() as u64).unwrap();
+    assert!(out.starts_with(b"OK"), "{}", String::from_utf8_lossy(&out));
+    drop(inc);
+    let _ = std::fs::remove_dir_all(&store_dir);
+}

@@ -667,3 +667,28 @@ fn a_bus_that_does_not_come_is_stood_in_for_until_it_does() {
         assert_eq!(v.hopeless(bad), k >= GIVE_UP, "failure {k}");
     }
 }
+
+/// A bus whose files to fetch take more than a bus may (`MAX_BUS_DOWNLOAD`) is not fetched -
+/// any announced bus was downloaded, however large - and nothing of it is kept: another bus
+/// stands in for it as for one that cannot be had.
+#[test]
+fn a_bus_too_large_to_fetch_is_not_fetched() {
+    let _turn = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let store = temp("too-large");
+    open_for_test(&store);
+    let bus = b"[model]\nmodel\\model.cfg\n".to_vec();
+    // three files of a GB each: 3 GB to fetch
+    let mut entries = vec![entry("Vehicles/Huge/h.bus", &bus)];
+    for k in 0..3u64 {
+        entries.push(Entry { path: format!("Vehicles/Huge/t{k}.dat"), size: super::super::MAX_FILE, sha256: format!("{:064x}", k + 7) });
+    }
+    let m = VehicleManifest { bus: "Vehicles/Huge/h.bus".into(), entries }.validated().unwrap();
+    let fp = m.fingerprint();
+    let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
+    let session = key.session();
+    super::super::upload::remember_host(host(key.clone(), m.clone(), HashMap::new()), session);
+    let why = Viewer::default().fetch(&fp).unwrap_err();
+    assert!(why.to_string().contains("more than a bus may"), "{why}");
+    assert!(manifest(&fp).is_none(), "nothing of it kept");
+    let _ = std::fs::remove_dir_all(&store);
+}

@@ -12,6 +12,9 @@ pub(super) const SENT_MAKES_ROOM_OF: std::time::Duration = std::time::Duration::
 /// Pieces of a file left unfinished this long go (its player gone): they took room nothing
 /// counted, kept as long as buses were.
 pub(super) const PIECES_KEEP: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+/// A loose piece younger than this is spared when room is made (an upload under way is still
+/// writing its file's pieces); older ones go before any bus does.
+pub(super) const PIECES_GRACE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 /// How long a bus nobody has used is kept, unless told otherwise (`keep_for_days`).
 pub(super) const KEEP: std::time::Duration = std::time::Duration::from_secs(30 * 86_400);
 
@@ -172,7 +175,19 @@ impl Buses {
         if have >= size + KEEP_FREE {
             return Ok(());
         }
-        self.collect(size + KEEP_FREE - have, unused_for);
+        // loose pieces first - kept before their file could be checked, so the cheapest to
+        // lose (a transfer that loses one sends it again): without this a player filled the
+        // disk with pieces of files never finished, which only went after `PIECES_KEEP`
+        let store = self.lock().as_ref().map(|v| v.store.clone());
+        if let Some(store) = store {
+            let freed = store.remove_pieces_for_room(size + KEEP_FREE - have, PIECES_GRACE);
+            if freed > 0 {
+                log::info!("vehicles: {:.1} MB of loose pieces let go to make room", freed as f64 / 1e6);
+            }
+        }
+        if let Some(have) = free().filter(|h| *h < size + KEEP_FREE) {
+            self.collect(size + KEEP_FREE - have, unused_for);
+        }
         match free() {
             Some(now) if now < size + KEEP_FREE => Err(format!("the server's disk is full ({:.1} GB free)", now as f64 / 1e9)),
             _ => Ok(()),

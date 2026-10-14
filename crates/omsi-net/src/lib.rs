@@ -1157,9 +1157,13 @@ const MAX_VEHICLE_PATH: usize = 260;
 /// or None. A pose comes from another machine, so the path is not trusted: it must be
 /// relative (no leading `/`, no drive, no `:`), without empty, `.` or `..` parts (or parts
 /// of dots only, which Windows reads as those), and name a `.bus` or `.ovh` file.
-/// Is `s` a vehicle's fingerprint (`v1-` and 64 lower-case hex digits)?
+/// Is `s` a vehicle's fingerprint (`v2-`, or the older `v1-`, and 64 lower-case hex digits)?
+/// (`v2` hashes the bus file's path too; `v1` is still recognised on the wire but no longer
+/// produced - see the game's `lan_mods::identity`.)
 pub fn is_fingerprint(s: &str) -> bool {
-    s.strip_prefix("v1-").is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    s.strip_prefix("v2-")
+        .or_else(|| s.strip_prefix("v1-"))
+        .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
 }
 
 pub fn vehicle_path(bus: &str) -> Option<String> {

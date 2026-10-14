@@ -88,8 +88,18 @@ pub(in crate::mods) struct Incoming {
     offer: Option<VehicleManifest>,
     /// Its files, held against a collection while they come (`vehicles::lease`).
     lease: Option<crate::mods::vehicles::Lease<'static>>,
+    /// The memory the kept offer and lease take, held against `UPLOAD_MEMORY` for the
+    /// connection's life, so a hundred connections each holding a huge list cannot pass the
+    /// budget (one more is told `ERR busy` and comes back).
+    held: Option<Held<'static>>,
     wanted: HashSet<usize>,
     got: usize,
+}
+
+/// Roughly the memory a manifest's entries take (each: its path, a 64-char hash, a size, and
+/// the per-entry overhead of the Vec, the lease and the `wanted` set).
+fn offer_memory(m: &VehicleManifest) -> u64 {
+    m.entries.iter().map(|e| e.path.len() as u64 + 160).sum()
 }
 
 impl Incoming {
@@ -113,10 +123,20 @@ impl Incoming {
             Ok(w) => w,
             Err(why) => return writeln!(out, "ERR {why}"),
         };
-        let plan: Vec<(usize, Vec<u64>)> = match self.offer.as_ref() {
-            Some(m) => wanted.iter().map(|k| (*k, crate::mods::vehicles::missing_pieces(&m.entries[*k]))).collect(),
-            None => Vec::new(),
+        let Some(m) = self.offer.as_ref() else {
+            // (the empty / takes-none offer: an empty plan)
+            writeln!(out, "OK 2")?;
+            return out.write_all(b"[]");
         };
+        // The pieces plan - the pieces of each wanted file still missing - is held against the
+        // memory budget while it is built and sent: a huge offer's plan (up to a piece per
+        // MB of up to `MAX_FILE` across up to `MAX_FILES` files) no longer grows the server's
+        // memory and CPU unbounded. One that would pass the budget is told `ERR busy`.
+        let plan_memory: u64 = wanted.iter().map(|k| 32 + crate::mods::pieces::count(m.entries[*k].size) * 16).sum();
+        let Some(_held) = uploads().hold(plan_memory.max(1)) else {
+            return writeln!(out, "ERR {}", says::BUSY);
+        };
+        let plan: Vec<(usize, Vec<u64>)> = wanted.iter().map(|k| (*k, crate::mods::vehicles::missing_pieces(&m.entries[*k]))).collect();
         let body = serde_json::to_vec(&plan).unwrap_or_default();
         writeln!(out, "OK {}", body.len())?;
         out.write_all(&body)
@@ -141,6 +161,8 @@ impl Incoming {
         self.wanted.clear();
         self.got = 0;
         self.offer = None;
+        self.lease = None;
+        self.held = None;
         if m.entries.is_empty() {
             return Ok(Ok(Vec::new()));
         }
@@ -159,6 +181,12 @@ impl Incoming {
         if let Some(bad) = m.entries.iter().find(|e| crate::mods::refuse_path(&e.path).is_some() || e.size > crate::mods::MAX_FILE) {
             return Ok(Err(format!("{}: {}", bad.path, crate::mods::refuse_path(&bad.path).unwrap_or_else(|| "too large".into()))));
         }
+        // (the kept offer and lease are held against the budget for the connection's life;
+        // the body's own hold above is given back when this returns)
+        let Some(held) = uploads().hold(offer_memory(&m)) else {
+            return Ok(Err(says::BUSY.into()));
+        };
+        self.held = Some(held);
         self.lease = Some(crate::mods::vehicles::lease(&m));
         // (what the server has itself in the same version - a stock bus, a pack installed
         // here - is taken from its own files, not sent)
@@ -282,14 +310,24 @@ pub(in crate::mods) fn send_manifest(out: &mut impl Write, fp: &Fingerprint) -> 
     let fp = fp.as_str();
     match crate::mods::vehicles::wait_for(fp, MANIFEST_WAIT) {
         Some(m) => {
-            // (with the files it is kept without, beside the list: a game before them reads
-            // the list alone, asks for those too and draws a box, as before)
-            let mut list = serde_json::to_value(&m).unwrap_or_default();
-            let held = crate::mods::vehicles::withheld_of(fp);
-            if !held.is_empty() {
-                list["withheld"] = serde_json::to_value(&held).unwrap_or_default();
-            }
-            let body = serde_json::to_vec(&list).unwrap_or_default();
+            // The list serialised straight to bytes - not through a `serde_json::Value` tree
+            // (~1 KB an entry), so a big manifest does not cost the server that much memory
+            // per request. The common case (no withheld files) serialises the manifest on its
+            // own; only when a bus is kept without some file (rare) is it joined with the
+            // "withheld" list it is drawn without (a game before them reads the list alone,
+            // asks for those too and draws a box, as before).
+            let withheld = crate::mods::vehicles::withheld_of(fp);
+            let body = if withheld.is_empty() {
+                serde_json::to_vec(&m).unwrap_or_default()
+            } else {
+                #[derive(serde::Serialize)]
+                struct Manifest<'a> {
+                    #[serde(flatten)]
+                    m: &'a VehicleManifest,
+                    withheld: Vec<crate::mods::vehicles::Withheld>,
+                }
+                serde_json::to_vec(&Manifest { m: &m, withheld }).unwrap_or_default()
+            };
             writeln!(out, "OK {}", body.len())?;
             out.write_all(&body)
         }

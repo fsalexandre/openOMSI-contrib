@@ -195,10 +195,11 @@ impl Default for Vm {
 
 const MAX_DEPTH: u32 = 64;
 
-/// Instructions one run of an engine-called block may take, its macros included. The
-/// language has no loops, but a macro that calls itself a few times over, 64 deep, would run
-/// for ever - a script that came with another player's bus would stop this game. The stock
-/// scripts take thousands a frame; a run cut short leaves its variables as they are.
+/// Instructions one vehicle's frame (all its `{frame}` or `{frame_ai}` blocks together), or
+/// one `{init}` block or trigger, may take, macros included. The language has no loops, but
+/// a macro that calls itself a few times over, 64 deep, would run for ever - a script that
+/// came with another player's bus would stop this game. The stock scripts take thousands a
+/// frame; a run cut short leaves its variables as they are.
 const MAX_OPS: u64 = 2_000_000;
 
 impl Vm {
@@ -229,17 +230,25 @@ impl Vm {
         }
     }
 
-    /// Run the `{frame}` blocks.
+    /// Run the `{frame}` blocks - one budget (`MAX_OPS`) for all of them: a vehicle's frame.
     pub fn run_frame(&mut self, p: &Program, state: &mut State, host: &mut dyn Host) {
-        for &b in &p.frame {
-            self.run_top(p, b, state, host);
-        }
+        self.run_frame_blocks(p, &p.frame, state, host);
     }
 
-    /// Run the `{frame_ai}` blocks (falls back to nothing when absent).
+    /// Run the `{frame_ai}` blocks (falls back to nothing when absent), on one budget too.
     pub fn run_frame_ai(&mut self, p: &Program, state: &mut State, host: &mut dyn Host) {
-        for &b in &p.frame_ai {
-            self.run_top(p, b, state, host);
+        self.run_frame_blocks(p, &p.frame_ai, state, host);
+    }
+
+    /// `blocks` run one after the other on empty stacks, sharing one budget. Each `{frame}`
+    /// block had a fresh 2M of its own, so a script made of many blocks still stalled every
+    /// game drawing that bus (one that came with another player's bus); the budget is now one
+    /// vehicle's frame, whatever its blocks.
+    fn run_frame_blocks(&mut self, p: &Program, blocks: &[BlockId], state: &mut State, host: &mut dyn Host) {
+        self.budget = MAX_OPS;
+        for &b in blocks {
+            self.stacks.clear();
+            self.run_block(p, b, state, host);
         }
     }
 
@@ -685,6 +694,27 @@ mod tests {
         vm.run_frame(&p, &mut st, &mut NullHost);
         assert!(st.get(p.var("a").unwrap()) > a, "the next run had a budget of its own");
         assert!(t0.elapsed() < std::time::Duration::from_secs(10), "{:?}", t0.elapsed());
+    }
+
+    /// The budget is one vehicle's frame, not one block's: a script split into many
+    /// `{frame}` blocks, each of which would run for ever, takes no more than one budget in
+    /// all (each block had its own 2M, so 50 blocks stalled the game 50 times as long).
+    #[test]
+    fn many_frame_blocks_share_one_budget() {
+        let mut src = String::from("{macro:m}\n(L.L.a) 1 + (S.L.a) (M.L.m) (M.L.m)\n{end}\n");
+        for _ in 0..50 {
+            src.push_str("{frame}\n(M.L.m)\n{end}\n");
+        }
+        let p = prog(&src);
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert_eq!(p.frame.len(), 50);
+        let mut vm = Vm::new();
+        let mut st = State::new(&p);
+        vm.run_frame(&p, &mut st, &mut NullHost);
+        // every op of `m` that counts `a` is one of the budget's: the 50 blocks together
+        // stayed within one budget, not 50
+        let a = st.get(p.var("a").unwrap());
+        assert!(a > 1000.0 && (a as u64) < MAX_OPS, "{a}");
     }
 
     #[test]

@@ -220,6 +220,37 @@ impl Store {
         }
     }
 
+    /// Loose pieces (of files not finished yet, so not checked yet) go, the least lately
+    /// written first, until `need` bytes are freed - but none written within `grace` (an
+    /// upload under way is still writing them; one that loses a piece sends it again, the
+    /// transfer is resumable). The bytes freed. Pieces are kept before their file can be
+    /// checked, so without this a player could fill the disk with them: `make_room` only let
+    /// whole buses go.
+    pub(crate) fn remove_pieces_for_room(&self, need: u64, grace: std::time::Duration) -> u64 {
+        let Ok(rd) = std::fs::read_dir(&self.dir) else { return 0 };
+        let mut loose: Vec<(std::time::SystemTime, u64, PathBuf)> = rd
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == PIECE || x == "partpiece"))
+            .filter_map(|e| {
+                let m = e.metadata().ok()?;
+                let t = m.modified().ok()?;
+                t.elapsed().ok().filter(|d| *d >= grace)?;
+                Some((t, m.len(), e.path()))
+            })
+            .collect();
+        loose.sort_by_key(|(t, _, _)| *t);
+        let mut freed = 0;
+        for (_, len, path) in loose {
+            if freed >= need {
+                break;
+            }
+            if std::fs::remove_file(&path).is_ok() {
+                freed += len;
+            }
+        }
+        freed
+    }
+
     /// Pieces of files left unfinished for longer than `age` go. How many.
     pub(crate) fn remove_stale_pieces(&self, age: std::time::Duration) -> usize {
         let Ok(rd) = std::fs::read_dir(&self.dir) else { return 0 };
@@ -299,6 +330,40 @@ fn dpapi(data: &[u8], protect: bool) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Loose pieces - kept before their file can be checked - go when room is needed, the
+    /// least lately written first, but never one written within the grace (an upload under
+    /// way): a player could otherwise fill the disk with pieces of files never finished.
+    #[test]
+    fn loose_pieces_go_oldest_first_to_make_room_but_not_recent_ones() {
+        let dir = std::env::temp_dir().join(format!("openomsi-lan-pieces-room-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir).unwrap();
+        let piece = vec![7u8; 4096];
+        let (old, older, young) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        for sha in [&old, &older, &young] {
+            store.put_piece(sha, 0, &piece).unwrap();
+        }
+        let now = std::time::SystemTime::now();
+        let age = |sha: &str, secs: u64| {
+            let f = std::fs::File::options().write(true).open(store.piece_file(sha, 0).0).unwrap();
+            f.set_modified(now - std::time::Duration::from_secs(secs)).unwrap();
+        };
+        age(&older, 3 * 3600);
+        age(&old, 2 * 3600);
+        age(&young, 60);
+        let grace = std::time::Duration::from_secs(600);
+        // room for one piece: the least lately written goes, the others stay
+        assert!(store.remove_pieces_for_room(1, grace) > 0);
+        assert!(!store.has_piece(&older, 0, piece.len() as u64), "the oldest went first");
+        assert!(store.has_piece(&old, 0, piece.len() as u64) && store.has_piece(&young, 0, piece.len() as u64));
+        // asked for far more: everything past the grace goes, the piece of an upload under way stays
+        store.remove_pieces_for_room(u64::MAX, grace);
+        assert!(!store.has_piece(&old, 0, piece.len() as u64));
+        assert!(store.has_piece(&young, 0, piece.len() as u64), "a piece written a minute ago is spared");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_store_keeps_nothing_plain() {

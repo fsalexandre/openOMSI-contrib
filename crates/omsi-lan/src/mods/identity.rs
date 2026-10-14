@@ -4,18 +4,26 @@
 //! another paint, is another fingerprint. The path a player's game names the bus by is only
 //! for showing.
 //!
-//! The list is hashed in one exact form (format v1), so that every machine gets the same
+//! The list is hashed in one exact form (format v2), so that every machine gets the same
 //! fingerprint for the same files, as Git's tree objects and Nix's NAR archives do:
 //!
 //! ```text
-//! "omsi-vehicle-manifest/v1\0sha256\0"
+//! "omsi-vehicle-manifest/v2\0sha256\0"
+//! u32 LE  length of the bus key
+//! key     the bus file's path (which file of the set is the bus), as a key
 //! for each file, ordered by the bytes of its key:
 //!     u32 LE  length of the key
 //!     key     the path from the game's root, `/`-separated, `.`/`..` resolved, lower case
 //!     u64 LE  size
 //!     32 B    SHA-256 of the file
-//! fingerprint = "v1-" + hex(SHA-256 of all of the above)
+//! fingerprint = "v2-" + hex(SHA-256 of all of the above)
 //! ```
+//!
+//! The bus key is hashed too (format v2): the same files with a different `bus` are a
+//! different bus, so no one can claim a popular bus's fingerprint by listing its files with
+//! `bus` pointing at another of them (which would leave every viewer a box). Older `v1-`
+//! fingerprints - which did not hash the bus - are still recognised on the wire, but no
+//! longer produced; a peer that announces one is served as a peer with no fingerprint is.
 //!
 //! The key is in lower case because OMSI runs on Windows, where `Texture\Bus.dds` and
 //! `texture\bus.dds` are one file: two entries that are one file there make the list
@@ -26,8 +34,8 @@ use super::Entry;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
-const HEADER: &[u8] = b"omsi-vehicle-manifest/v1\0sha256\0";
-const PREFIX: &str = "v1-";
+const HEADER: &[u8] = b"omsi-vehicle-manifest/v2\0sha256\0";
+const PREFIX: &str = "v2-";
 
 /// The files of one bus and the bus file itself (its path from the game's root).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -79,6 +87,10 @@ impl VehicleManifest {
     pub fn fingerprint(&self) -> String {
         let mut h = Sha256::new();
         h.update(HEADER);
+        // (which file of the set is the bus is part of what the bus is: v2)
+        let bus = key(&self.bus).unwrap_or_default();
+        h.update((bus.len() as u32).to_le_bytes());
+        h.update(bus.as_bytes());
         let mut keyed: Vec<(String, &Entry)> = self.entries.iter().map(|e| (key(&e.path).unwrap_or_default(), e)).collect();
         keyed.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
         for (k, e) in keyed {
@@ -146,6 +158,18 @@ mod tests {
         let one = bus(vec![e("Vehicles/B/b.bus", b"bus"), e("Vehicles/B/ab", b"x")]).validated().unwrap().fingerprint();
         let two = bus(vec![e("Vehicles/B/b.bus", b"bus"), e("Vehicles/B/a", b"x")]).validated().unwrap().fingerprint();
         assert_ne!(one, two);
+    }
+
+    /// The same files with a different `bus` are a different bus (v2): a player cannot claim a
+    /// popular bus's fingerprint by listing its files with `bus` pointing at another of them.
+    #[test]
+    fn the_bus_file_is_part_of_the_fingerprint() {
+        let files = vec![e("Vehicles/B/b.bus", b"[model]\nmodel.cfg\n"), e("Vehicles/B/other.bus", b"[model]\nother.cfg\n"), e("Vehicles/B/t.dds", b"tex")];
+        let a = VehicleManifest { bus: "Vehicles/B/b.bus".into(), entries: files.clone() }.validated().unwrap();
+        let b = VehicleManifest { bus: "Vehicles/B/other.bus".into(), entries: files }.validated().unwrap();
+        assert_ne!(a.fingerprint(), b.fingerprint(), "same files, another bus file: another fingerprint");
+        // (the form the protocol takes - v2 now)
+        assert!(a.fingerprint().starts_with("v2-") && omsi_net::is_fingerprint(&a.fingerprint()));
     }
 
     #[test]

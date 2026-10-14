@@ -33,7 +33,16 @@ pub(crate) struct Viewer {
     told: Mutex<HashSet<String>>,
     /// By fingerprint: when it was first asked for (`hopeless`).
     asked: Mutex<HashMap<String, std::time::Instant>>,
+    /// Bytes of other players' buses fetched this session (`MAX_SESSION_DOWNLOAD`).
+    fetched: std::sync::atomic::AtomicU64,
 }
+
+/// A bus whose files to fetch take more than this is not fetched: another stands in for it
+/// (the heaviest buses players drive are ~800 MB). Any announced bus was downloaded, however
+/// large; the host's map has had a ceiling (`MAX_TOTAL`), its buses had none.
+pub(super) const MAX_BUS_DOWNLOAD: u64 = 2 << 30;
+/// Other players' buses fetched in one session, at most (as much as a host's mods may take).
+pub(super) const MAX_SESSION_DOWNLOAD: u64 = crate::mods::MAX_TOTAL;
 
 pub(super) type Drivers = HashMap<u32, (String, VecDeque<std::time::Instant>)>;
 
@@ -330,6 +339,17 @@ impl Viewer {
         }
         let missing = missing(&m);
         let total: u64 = missing.iter().map(|k| m.entries[*k].size).sum();
+        // (a ceiling for a bus, and for all of a session's: another stands in past them)
+        use std::sync::atomic::Ordering;
+        if total > MAX_BUS_DOWNLOAD {
+            return Err(format!("{} would take {} to fetch, more than a bus may ({})", m.bus, crate::mods::upload::mb(total), crate::mods::upload::mb(MAX_BUS_DOWNLOAD)).into());
+        }
+        if self.fetched.fetch_add(total, Ordering::AcqRel).saturating_add(total) > MAX_SESSION_DOWNLOAD {
+            self.fetched.fetch_sub(total, Ordering::AcqRel);
+            return Err(format!("other players' buses fetched this session passed {}", crate::mods::upload::mb(MAX_SESSION_DOWNLOAD)).into());
+        }
+        // (given back unless the bus is kept: a fetch that fails does not count)
+        let mut reserved = Reserved(&self.fetched, total, false);
         self.set(fp, Wanted::Pending(0, total));
         let mut done = 0u64;
         // what this machine has itself, in the same version
@@ -354,10 +374,23 @@ impl Viewer {
             r => r?,
         }
         commit(m)?;
+        reserved.2 = true;
         if total > 0 {
             crate::mods::upload::show(format!("Another player's bus is here ({}): it is shown now", crate::mods::upload::mb(total)), 1, 1, false);
         }
         Ok(())
+    }
+}
+
+/// Bytes of a session's download budget taken for one bus; given back when dropped unless
+/// the bus was kept (`.2`).
+struct Reserved<'a>(&'a std::sync::atomic::AtomicU64, u64, bool);
+
+impl Drop for Reserved<'_> {
+    fn drop(&mut self) {
+        if !self.2 {
+            self.0.fetch_sub(self.1, std::sync::atomic::Ordering::AcqRel);
+        }
     }
 }
 
