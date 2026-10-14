@@ -32,6 +32,17 @@ struct RemoteView {
 #[derive(Default)]
 pub(crate) struct LanView {
     remotes: hashbrown::HashMap<u32, RemoteView>,
+    /// The world's reader of vehicle sets was given to `omsi_lan::remote_load` (taken back
+    /// when this view goes, with the session).
+    prefetching: bool,
+}
+
+impl Drop for LanView {
+    fn drop(&mut self) {
+        if self.prefetching {
+            omsi_lan::remote_load::set_prefetcher(None);
+        }
+    }
 }
 
 impl LanView {
@@ -54,6 +65,13 @@ pub(crate) fn apply_lan(
     frame: &crate::lan::LanInput,
     dt: f32,
 ) {
+    // (the other players' buses are read off the frame, their paint put on the GPU there as
+    // the AI fleet's is: then making one here only puts it into the scene)
+    if !view.prefetching {
+        let p = w.vehicle_prefetch(r);
+        omsi_lan::remote_load::set_prefetcher(Some(Arc::new(move |ty: &omsi_sim::VehicleType, scheme: Option<usize>| p.prefetch(ty, scheme))));
+        view.prefetching = true;
+    }
     let changes = std::mem::take(&mut game.drawn);
     for e in changes.events {
         match e {
@@ -64,7 +82,12 @@ pub(crate) fn apply_lan(
             }
             RemoteEvent::Made(id) => {
                 if let Some(rv) = game.remotes.get(&id) {
+                    let t = std::time::Instant::now();
                     view.remotes.insert(id, made(w, r, scene, rv));
+                    // (what drawing it cost the frame, when that was much)
+                    if t.elapsed() > std::time::Duration::from_millis(30) {
+                        log::info!("LAN: putting player {id}'s {} into the scene took the frame {:.0} ms", if rv.stand_in { "box" } else { "bus" }, t.elapsed().as_secs_f64() * 1000.0);
+                    }
                 }
             }
         }

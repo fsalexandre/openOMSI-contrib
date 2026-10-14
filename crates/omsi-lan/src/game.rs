@@ -133,6 +133,10 @@ pub struct RemoteVehicle {
     made_gen: u64,
     /// Was its bus here already when it was made? A box made so is not made again for it.
     made_ready: bool,
+    /// A box made while its bus was being read off the frame (`remote_load`): the count of
+    /// buses read then, and that bus (file, paint). It is made again when a bus is done and
+    /// its own is no longer being read (done itself, or its turn has come).
+    made_reading: Option<(u64, std::path::PathBuf, String)>,
     pub last: Pose,
     /// The bus file, paint scheme and fingerprint it was made in (`last` is the state drawn,
     /// which may be an interpolated older one).
@@ -1716,10 +1720,23 @@ fn remote_bus_file(args: &LanConfig, bus: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Load the type a remote player drives - as that player has it - or, while it is not here
-/// as that bus (or a server's `vehicles` list does not allow it), a stand-in: a neutral box
-/// of its size (`mods::placeholder`), never another bus. The flag says which.
-fn remote_type(args: &LanConfig, pose: &Pose) -> Option<(Arc<omsi_sim::VehicleType>, bool)> {
+/// The type a remote player is drawn with (`remote_type`).
+struct RemoteType {
+    ty: Arc<omsi_sim::VehicleType>,
+    /// A box stands in for their bus.
+    stand_in: bool,
+    /// ...because their bus (this file) is being read off the frame (`remote_load`).
+    reading: Option<std::path::PathBuf>,
+    /// What reading their bus read (`mods::vehicles::audit`).
+    reads: Vec<std::path::PathBuf>,
+}
+
+/// The type a remote player drives - as that player has it - or, while it is not here as
+/// that bus (or a server's `vehicles` list does not allow it, or it is still being read off
+/// the frame: `remote_load`), a stand-in: a neutral box of its size (`mods::placeholder`),
+/// never another bus.
+fn remote_type(args: &LanConfig, pose: &Pose) -> Option<RemoteType> {
+    let mut reading = None;
     let allowed = crate::server_cfg::SERVER_VEHICLES.get().filter(|l| !l.is_empty());
     let loaded = if allowed.is_none_or(|l| crate::server_cfg::allows(l, &pose.bus)) {
         // the bus as its player has it, file for file (`mods::vehicles`): this machine's
@@ -1736,23 +1753,26 @@ fn remote_type(args: &LanConfig, pose: &Pose) -> Option<(Arc<omsi_sim::VehicleTy
         } else {
             remote_bus_file(args, &pose.bus)
         };
-        // (read under a guard: a file that would stop the reader makes the bus a box that
-        // says so, not the end of this game)
-        path.and_then(|path| {
-            std::panic::catch_unwind(|| omsi_sim::VehicleType::load(&args.root, &path))
-                .map_err(|_| "its files could not be read".to_string())?
-                .map_err(|e| e.to_string())
+        // (read on a thread of its own, its paint put on the GPU there too: a heavy coach
+        // read here froze the frame for a good part of a second - `remote_load`)
+        path.and_then(|path| match crate::remote_load::get(&args.root, &path, &pose.paint) {
+            crate::remote_load::Got::Ready(ty, reads) => Ok((ty, reads)),
+            crate::remote_load::Got::Reading => {
+                reading = Some(path);
+                Err("being read".to_string())
+            }
+            crate::remote_load::Got::Failed(why) => Err(why),
         })
     } else {
         Err("the server does not offer it".to_string())
     };
     match loaded {
-        Ok(t) => Some((Arc::new(t), false)),
+        Ok((ty, reads)) => Some(RemoteType { ty, stand_in: false, reading: None, reads }),
         Err(e) => {
             // never another bus in its place - not ours, not one the server has: a plain box
             // of its size, until it is here as itself (`mods::placeholder`)
             log::info!("LAN: player {} drives {:?}, not here as that bus ({e}); a box of its size stands for it", pose.id, pose.bus);
-            crate::mods::placeholder::of_size(&args.root, pose.length, pose.width, pose.height, pose.box_offset).map(|t| (t, true))
+            crate::mods::placeholder::of_size(&args.root, pose.length, pose.width, pose.height, pose.box_offset).map(|ty| RemoteType { ty, stand_in: true, reading, reads: Vec::new() })
         }
     }
 }
@@ -1766,10 +1786,14 @@ fn new_remote(
     lan_host: &dyn LanHost,
     clock: Option<&omsi_sim::SimClock>,
 ) -> Option<RemoteVehicle> {
-    // (what loading it reads: a fetched bus should read nothing but its own files)
-    let audit = omsi_cfg::vfs::Audit::begin();
     let made_ready = crate::mods::vehicles::ready(&pose.content);
-    let (ty, stand_in) = remote_type(args, pose)?;
+    let t0 = Instant::now();
+    let read_before = crate::remote_load::generation();
+    let RemoteType { ty, stand_in, reading, mut reads } = remote_type(args, pose)?;
+    let t_type = t0.elapsed();
+    let made_reading = reading.map(|path| (read_before, path, pose.paint.clone()));
+    // (what making it reads besides: a fetched bus should read nothing but its own files)
+    let audit = omsi_cfg::vfs::Audit::begin();
     let scheme = if pose.paint.is_empty() {
         None
     } else {
@@ -1783,10 +1807,13 @@ fn new_remote(
         Some(crate::mods::vehicles::Wanted::Mounted(_)) if !stand_in => crate::mods::vehicles::mount(&pose.content),
         _ => None,
     };
+    let t1 = Instant::now();
     let (mut vehicle, hof) =
         lan_host.remote_vehicle(args, ty, scheme, clock.cloned().unwrap_or_else(|| args.start_clock()), fonts_at.as_deref());
+    let t_vehicle = t1.elapsed();
+    reads.extend(audit.end());
     if !stand_in && omsi_net::is_fingerprint(&pose.content) {
-        crate::mods::vehicles::audit(&pose.content, &args.root, &audit.end());
+        crate::mods::vehicles::audit(&pose.content, &args.root, &reads);
     }
     // (with its rear sections: theirs are in the table too)
     let table = sync_table(game, &vehicle);
@@ -1798,6 +1825,17 @@ fn new_remote(
         .map(|q| (DVec3::new(q.x, q.y, q.z), q.heading as f64))
         .collect();
     let matched = pose.table == table.hash;
+    // (what making it cost the frame, when that was much: see `remote_load`)
+    if t0.elapsed() > std::time::Duration::from_millis(30) {
+        log::info!(
+            "LAN: making player {}'s {} took the frame {:.0} ms (its type {:.0} ms, the vehicle {:.0} ms)",
+            pose.id,
+            if stand_in { "box" } else { "bus" },
+            t0.elapsed().as_secs_f64() * 1000.0,
+            t_type.as_secs_f64() * 1000.0,
+            t_vehicle.as_secs_f64() * 1000.0
+        );
+    }
     log::info!(
         "LAN: drawing player {} '{}' in {}{} at ({:.1}, {:.1}) heading {:.0}{}; {}",
         pose.id,
@@ -1839,6 +1877,7 @@ fn new_remote(
         stand_in,
         made_gen: omsi_cfg::content_generation(),
         made_ready,
+        made_reading,
         last: pose.clone(),
         made_as: (pose.bus.clone(), pose.paint.clone(), pose.content.clone()),
         track: Default::default(),
@@ -2366,6 +2405,8 @@ pub fn tick_receive(
                     // (a box while its bus is here already: made as a box in the moment
                     // between the bus's mount and the fetch saying it is done)
                     || rv.stand_in && !rv.made_ready && crate::mods::vehicles::ready(&pose.content)
+                    // (a box while its bus was read off the frame, when a bus is done)
+                    || rv.made_reading.as_ref().is_some_and(|(g, path, paint)| *g != crate::remote_load::generation() && !crate::remote_load::being_read(path, paint))
             })
             .unwrap_or(false)
         {
