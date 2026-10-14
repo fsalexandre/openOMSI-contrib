@@ -13,6 +13,7 @@ pub(in crate::mods) fn is_open() -> bool {
     buses().is_open()
 }
 
+#[cfg(test)]
 pub(crate) fn manifest(fp: &str) -> Option<VehicleManifest> {
     buses().manifest(fp)
 }
