@@ -19,9 +19,13 @@ fn main() {
         for p in lan.peers().filter(|p| p.has_info) {
             let q = &p.pose;
             let line = format!(
-                "player {} '{}': {} | paint '{}' | content '{}' | height {:.2} | {} texts, {} freetex",
+                "player {} '{}' at ({:.1}, {:.1}, {:.2}) heading {:.1}: {} | paint '{}' | content '{}' | height {:.2} | {} texts, {} freetex",
                 q.id,
                 q.name,
+                q.x,
+                q.y,
+                q.z,
+                q.heading,
                 q.bus,
                 q.paint,
                 q.content,
