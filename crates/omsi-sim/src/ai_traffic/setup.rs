@@ -157,6 +157,8 @@ impl TrafficSim {
             stats: stats::TrafficStats::from_env(),
             scenery_through: Vec::new(),
             sim_accum: 0.0,
+            scripts_due: true,
+            step_scripts: true,
             frame_alpha: 1.0,
             poses: Default::default(),
             change_claims: Vec::new(),

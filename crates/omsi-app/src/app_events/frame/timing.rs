@@ -33,8 +33,10 @@ impl App {
         // summary, the personnel file and the LAN goodbye are not lost
         // the card ran out of memory: fewer textures (the finest levels of the far
         // ones go), before the driver gives the device up
-        if self.renderer.as_ref().is_some_and(|r| r.take_out_of_memory()) {
+        let settling = self.perf.texture_cut_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2));
+        if self.renderer.as_ref().is_some_and(|r| r.take_out_of_memory()) && !settling {
             if let Some(w) = self.world.as_ref() {
+                self.perf.texture_cut_at = Some(Instant::now());
                 let now = w.texture_budget_bytes();
                 let less = if now == 0 { 600_000_000 } else { (now * 3 / 5).max(300_000_000) };
                 w.set_texture_budget(less);

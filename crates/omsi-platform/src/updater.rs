@@ -1,7 +1,7 @@
 //! Updates from the project's GitHub releases (github.com/openOMSI-org/openOMSI).
 //!
-//! Every push to main publishes a release `v<MAJOR.MINOR.COMMIT>` with one archive per
-//! platform (see .github/workflows/release.yml). The launcher asks the GitHub API for the
+//! A release a maintainer starts from main publishes `v<MAJOR.MINOR.COMMIT>` with one archive
+//! per platform (see .github/workflows/release.yml). The launcher asks the GitHub API for the
 //! latest release when it starts (setting `update_check`), and when it is newer than this
 //! build it offers it - or, with `update_auto`, installs it at once:
 //!

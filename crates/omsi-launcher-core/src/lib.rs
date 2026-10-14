@@ -1906,11 +1906,12 @@ pub fn graphics_mode(v: &str) -> &'static str {
 /// tunes that mode and keeps it: it never switches Enhanced or ray tracing on or off.
 /// Vanilla's leave out what OMSI 2 does not draw; High is the defaults of Vanilla+; the
 /// enhanced modes take fewer MSAA samples and a smaller render scale below High, and
-/// Enhanced+ smaller shadow maps and mirrors too. The texture memory stays automatic.
+/// Enhanced+ smaller shadow maps and mirrors too. The texture memory is left as it is.
 pub fn graphics_presets_for(mode: &str) -> [(&'static str, Value); 4] {
     let mode = graphics_mode(mode);
     let classic = mode == "vanilla";
     let traced = mode == "enhanced_plus";
+    let enhanced = traced || mode == "enhanced";
     // per level: Low, Medium, High, Ultra
     let (msaa, scale) = match mode {
         "enhanced" => ([1, 1, 2, 4], ["0.67", "0.85", "auto", "auto"]),
@@ -1924,16 +1925,25 @@ pub fn graphics_presets_for(mode: &str) -> [(&'static str, Value); 4] {
     let view = ["600", "900", "auto", "2000"];
     let obj_size = [0.03, 0.02, 0.013, 0.005];
     let obj_dist = ["500", "750", "auto", "1500"];
+    let rain = ["low", "medium", "high", "high"];
     std::array::from_fn(|i| {
         let low = i == 0;
-        let preset = json!({
+        let mut preset = json!({
             "graphics": mode, "msaa": msaa[i], "anisotropy": anisotropy[i], "shadow_size": shadow[i],
-            "ssao": traced || (!classic && i >= 2), "shadows": traced || (!classic && !low),
-            "detail_textures": !classic && !low, "reflections": traced || !low,
-            "clouds": !low, "windy_trees": !low,
+            "clouds": !(enhanced && low), "rain_quality": rain[i], "windy_trees": !low,
             "view_distance": view[i], "min_obj_size": obj_size[i], "max_obj_dist": obj_dist[i],
-            "mirror_size": mirror[i], "mirror_refresh": refresh[i], "render_scale": scale[i], "texture_memory": 0,
+            "mirror_size": mirror[i], "mirror_refresh": refresh[i], "render_scale": scale[i],
         });
+        if !classic {
+            preset["detail_textures"] = json!(!low);
+        }
+        if !classic && !traced {
+            preset["ssao"] = json!(i >= 2);
+            preset["shadows"] = json!(!low);
+        }
+        if !traced {
+            preset["reflections"] = json!(true);
+        }
         (["Low", "Medium", "High", "Ultra"][i], preset)
     })
 }
@@ -1983,7 +1993,16 @@ pub fn perf_overlay_mode(value: &str) -> &'static str {
 
 /// The page's view of a `settings.cfg` text (None: no file yet, the game's defaults).
 pub fn settings_from_text(text: Option<&str>) -> Value {
+    settings_from_text_on(text, cfg!(any(target_os = "android", target_os = "ios")))
+}
+
+pub fn settings_from_text_on(text: Option<&str>, phone: bool) -> Value {
     let mut v = json!({ "msaa": 4, "anisotropy": 8, "ssao": true, "shadows": true, "shadow_size": 2048, "navigator": true, "ui_opacity": 0.85, "navigator_corner": "bottom-left", "boarding": "auto", "detail_textures": true, "exact_fare": true, "enhanced": false, "graphics": "vanilla_plus", "fullscreen": false, "vsync": true, "volume": 0.6, "drive_keys": "simple", "render_scale": "auto", "view_distance": "auto", "language": "ENG", "texture_memory": 0, "texture_compression": true, "gpu_texture_compression": true, "chat": true, "tooltips": true, "name_tags": true, "show_fps": false, "clouds": true, "cloud_quality": "high", "rain_quality": "high", "pax_density": 1.0, "vol_ai": 1.0, "vol_scenery": 1.0, "ambient": true, "vol_ambient": 0.8, "mirror_size": 256, "doppler": true, "driver": true, "max_fps": 0, "min_obj_size": 0.013, "max_obj_dist": "auto" });
+    if phone {
+        for (k, d) in [("msaa", json!(2)), ("anisotropy", json!(4)), ("ssao", json!(false)), ("shadow_size", json!(1024)), ("mirror_size", json!(128)), ("max_fps", json!(60)), ("max_obj_dist", json!("900")), ("pax_density", json!(0.7)), ("navigator_corner", json!("top-center"))] {
+            v[k] = d;
+        }
+    }
     v["touch_door_mode"] = json!("standard");
     v["triple_screen"] = json!(false);
     v["triple_span"] = json!(true);
@@ -2312,9 +2331,9 @@ pub fn save_settings(v: &Value) -> Result<()> {
 
 /// The settings a graphics profile holds: what the Graphics tab shows, except the machine's
 /// own (fullscreen, graphics API).
-pub const GRAPHICS_PROFILE_KEYS: [&str; 27] = [
-    "graphics", "msaa", "render_scale", "anisotropy", "shadow_size", "ssao", "shadows", "shadow_casters", "detail_textures", "led_glow", "led_mips", "reflections", "clouds", "cloud_quality", "rain_quality", "windy_trees",
-    "vsync", "max_fps", "view_distance", "max_obj_dist", "min_obj_size", "mirror_size", "mirror_refresh", "mirror_quality", "mirror_hud_every_frame", "texture_memory", "texture_compression",
+pub const GRAPHICS_PROFILE_KEYS: [&str; 30] = [
+    "graphics", "msaa", "render_scale", "anisotropy", "shadow_size", "ssao", "shadows", "shadow_casters", "detail_textures", "night_brightness", "led_glow", "led_mips", "shadow_blobs", "reflections", "clouds", "cloud_quality", "rain_quality", "windy_trees",
+    "vsync", "max_fps", "view_distance", "max_obj_dist", "min_obj_size", "mirror_size", "mirror_refresh", "mirror_quality", "mirror_hud_every_frame", "texture_memory", "texture_compression", "gpu_texture_compression",
 ];
 
 fn graphics_profiles_path() -> PathBuf {

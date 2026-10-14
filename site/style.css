@@ -310,3 +310,4 @@ h1 { line-height: 1.25; }
 
 /* "playing now": a green dot in front of the count */
 .chip-live .material-icons { color: #2ea043; }
+.release-channels { display: flex; gap: 12px; flex-wrap: wrap; margin: 20px 0; }

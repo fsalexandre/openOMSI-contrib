@@ -302,6 +302,15 @@ pub struct TrafficSim {
     pub scenery_through: Vec<Obb>,
     /// The frame time not yet run as a step (s, see `fixed_step`).
     pub sim_accum: f64,
+    /// Whether the scripts and animations of the cars run in this call's last step (the
+    /// game sets it for the frame's last tick of the fixed simulation step; true by
+    /// default). The bodies move in every step; the scripts, the animations and the sounds
+    /// they trigger once a frame, as Omsi.exe runs them - run in every 20 ms step they cost
+    /// up to four times as much as a frame had time for at low frame rates, and the frame
+    /// rate fell the further the slower it already was (big maps, heavy AI lists).
+    pub scripts_due: bool,
+    /// The step running now runs the scripts (see `scripts_due`).
+    pub step_scripts: bool,
     /// How far this frame's picture is from the step before the last to the last (0..1).
     pub frame_alpha: f32,
     /// Every car's parts as they stood before the last step, by id (see `fixed_step`).

@@ -71,6 +71,22 @@ fn remember_screen(window: &tauri::Window) {
 }
 
 fn main() {
+    // A panic ends the launcher with code 101, and on Windows it has no console to say why:
+    // the start guard only saw "ended on an error before its first frames" (#2574). Its
+    // message and place go into launcher.log, which the support package carries.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let at = info.location().map(|l| format!(" at {}:{}", l.file(), l.line())).unwrap_or_default();
+        let what = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
+        omsi_launcher_lib::log_to_file(&format!("the launcher panicked on thread '{thread}'{at}: {what}"));
+        default_hook(info);
+    }));
     omsi_cfg::migrate_legacy_data_dir();
     omsi_launcher_lib::adopt_own_inputs();
     let args: Vec<String> = std::env::args().collect();

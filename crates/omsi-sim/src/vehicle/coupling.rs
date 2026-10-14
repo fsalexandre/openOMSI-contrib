@@ -71,13 +71,13 @@ pub fn coupling_offsets(
     // one behind joins by its front coupling, which is its rear where it is turned round.
     // The two read opposite ends because the two face opposite ways.
     let lead_rear = if lead.def.boogies.is_some() {
-        declared_joint(lead, lead_reversed)
+        declared_coupling(&lead.def, lead_reversed).y
     } else {
         lead.model_box()
             .map(|(lo, hi)| if lead_reversed { hi.y } else { lo.y })?
     };
     let car_front = if car.def.boogies.is_some() {
-        declared_joint(car, !car_reversed)
+        declared_coupling(&car.def, !car_reversed).y
     } else {
         car.model_box()
             .map(|(lo, hi)| if car_reversed { lo.y } else { hi.y })?
@@ -85,45 +85,11 @@ pub fn coupling_offsets(
     Some((lead_rear, car_front))
 }
 
-/// The shortest model that is a car body and not one of its fittings. The bellows, the
-/// passenger floor and the gear of a rail car are modelled on their own, a fraction of a
-/// metre long, and their declared joints are measured from where they really are: only a
-/// body long enough to stand on its own bounds is judged against itself.
-pub(super) const MIN_BODY_FOR_JOINT: f32 = 1.0;
-
-/// The joint of a bogie-defined rail car at the `front` or `back` coupling of its body
-/// frame (m forward of its origin), from the file where it is there.
-///
-/// A declared joint is kept even where it leaves an overlap or a gap between two cars -
-/// that is what the CR200J's inset rear coupling does in vanilla, and it is deliberate. A
-/// joint that stands metres clear of the body is not that car's joint in that frame,
-/// though, and taking it for one puts the car on the wrong side of the one it hangs on.
-/// The NF6D's two bogie frames declare `[coupling_front] 0 -17.71 1` and
-/// `[coupling_back] 0 3.42 1` on 2.2 m models: the first put its bogie seventeen metres ahead
-/// of the joint it hangs on - in front of the tram's own cab - and the second put the rear
-/// cab car in front of the bogie it belongs behind. A joint may stand clear of the body - a
-/// coupler, a drawbar - but not by more than the body's own length, and there the body's
-/// own end is used, as a rail car without `[boogies]` is placed anyway. A body too short to
-/// be one is not measured against itself: see [`MIN_BODY_FOR_JOINT`].
-pub(super) fn declared_joint(ty: &VehicleType, front: bool) -> f32 {
-    let declared = declared_coupling(&ty.def, front).y;
-    let Some((lo, hi)) = ty
-        .model_box()
-        .filter(|(lo, hi)| hi.y - lo.y >= MIN_BODY_FOR_JOINT)
-    else {
-        return declared;
-    };
-    let slack = hi.y - lo.y;
-    if declared < lo.y - slack || declared > hi.y + slack {
-        if front {
-            hi.y
-        } else {
-            lo.y
-        }
-    } else {
-        declared
-    }
-}
+// (A declared joint is kept however far it stands from the body. The rail parts are laid
+// along the track by these distances alone (`VehicleInstance::retrail`), and the stock
+// Berlin S-Bahn (BR481) hangs its bogie frames 34 m ahead of the joint behind its last car,
+// which puts them under the cars they carry: put at the end of the body instead, they ran
+// behind the train (#2069).)
 
 /// `(lead's rear, car's front)` in each body's model frame, including default joints.
 pub fn coupling_points(

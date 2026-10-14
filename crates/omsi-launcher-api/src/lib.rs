@@ -595,12 +595,51 @@ fn arg<T: serde::de::DeserializeOwned>(args: &Value, name: &str) -> Result<T, St
 }
 
 /// Run a command of the page (on the caller's thread: a window runs it on a worker).
+/// A folder's sub-folders and (`archives`) its mod archives, for the page's own browser on a
+/// phone, which has no file dialog: up to 0.2.34 the phone's launcher browsed the storage
+/// itself to install a mod, and since the page took over "Add folder" and "Add ZIP" did
+/// nothing there (#2513, #2526, #2567). No path: the shared storage (or the home folder).
+fn list_dir(path: Option<String>, archives: bool) -> Answer {
+    let start = || {
+        ["/storage/emulated/0", "/sdcard"]
+            .iter()
+            .map(std::path::PathBuf::from)
+            .find(|p| p.is_dir())
+            .or_else(|| std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from))
+            .unwrap_or_else(|| std::path::PathBuf::from("/"))
+    };
+    let dir = path.filter(|p| !p.trim().is_empty()).map(std::path::PathBuf::from).unwrap_or_else(start);
+    let rd = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let (mut dirs, mut files) = (Vec::new(), Vec::new());
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let Ok(kind) = e.file_type() else { continue };
+        if kind.is_dir() {
+            dirs.push(name);
+        } else if archives && [".zip", ".7z", ".rar"].iter().any(|x| name.to_ascii_lowercase().ends_with(x)) {
+            files.push(name);
+        }
+    }
+    dirs.sort_by_key(|n| n.to_lowercase());
+    files.sort_by_key(|n| n.to_lowercase());
+    Ok(json!({
+        "path": dir.to_string_lossy(),
+        "parent": dir.parent().map(|p| p.to_string_lossy().to_string()),
+        "dirs": dirs,
+        "files": files,
+    }))
+}
+
 pub fn call(cmd: &str, args: &Value, p: &dyn Platform) -> Answer {
     match cmd {
         "bootstrap" => bootstrap(p),
         "translations" => translations(arg::<String>(args, "lang")?),
         "config_save" => config_save(arg::<String>(args, "root")?, arg::<String>(args, "game")?),
         "maps" => maps(),
+        "list_dir" => list_dir(arg::<Option<String>>(args, "path")?, arg::<Option<bool>>(args, "archives")?.unwrap_or(false)),
         "vehicles" => vehicles(p),
         "weather" => weather(),
         "nearest_airport" => nearest_airport(arg::<String>(args, "map")?),

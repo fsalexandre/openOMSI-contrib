@@ -70,18 +70,22 @@ fn prepass_items(scene: &Scene, visible: &[(usize, f32, bool)], deferred: bool) 
     let mut safe_batches = Vec::new();
     for &(i, _, _) in visible {
         let inst = &scene.instances[i];
-        // A model drawn in its own order has no depth before it is drawn: an opaque part
-        // that a depth-writing pane before it hides (a scroll box's line under its invisible
-        // cover) put its depth here, kept the wall behind it from being drawn, and then
-        // failed against the pane itself - a hole of the clear colour (#2059).
-        if inst.ordered {
-            continue;
-        }
         let cull = culls_back_faces(scene, inst);
         for (ri, (_, _, slot)) in scene.meshes[inst.mesh].ranges.iter().enumerate() {
             let mat_id = inst.materials.get(*slot as usize).copied().unwrap_or(0);
             let mat = &scene.materials[mat_id];
             let kind = kind_of(mat.alpha);
+            // A model drawn in its own order: an opaque part that a depth-writing pane
+            // before it hides (a scroll box's line under its invisible cover) put its depth
+            // here, kept the wall behind it from being drawn, and then failed against the
+            // pane itself - a hole of the clear colour (#2059). So its parts after the first
+            // such pane stay out of the prepass; the ones before it go in as any model's.
+            // (0.2.46 left the whole model out: a bus with its glass listed early lost its
+            // body from the depth that the ambient occlusion and the sun's glare read - no
+            // contact shadow under it, the glare and the passengers through its roof.)
+            if inst.ordered && kind == PIPE_BLEND && mat.writes_depth {
+                break;
+            }
             // Ground blends compose before they may occlude later scenery.
             // The transmap body prepass is for ordinary meshes, not these
             // authored surface layers (including their terrain brush masks).

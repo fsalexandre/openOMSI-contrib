@@ -9,6 +9,8 @@ pub(super) fn options_pages(app: &App) -> Vec<Page> {
     let pct = |v: f32| format!("{:.0} %", v * 100.0);
     let cm = |v: f32| format!("{:+.0} cm", v * 100.0);
     let later = "Takes effect when the game starts the next time";
+    let mode = session_mode(app);
+    let shown = |key: &str| shown_in_mode(mode, key);
     let game: Vec<(String, String)> = vec![
         switch_row(app, "navigator", "Navigator", "Enables/Disables the Minimap"),
         switch_row(app, "nav_ai", "AI vehicles on the map", "Shows/hides the other (AI) vehicles on the Minimap and the city map"),
@@ -42,18 +44,17 @@ pub(super) fn options_pages(app: &App) -> Vec<Page> {
         pick("render_scale", "Render scale", later),
         pick("anisotropy", "Anisotropic", later),
         // (Enhanced+ traces its shadows, occlusion and reflections: always on there)
-        switch_row(app, "shadows", "Sun shadows", "Enables/Disabled shadows").filter(|_| !app.settings.ray_tracing()),
-        pick("shadow_size", "Shadow map", later),
-        switch_row(app, "ssao", "Ambient occlusion", later).filter(|_| !app.settings.ray_tracing()),
-        pick("shadow_casters", "Shadows cast by", later),
-        switch_row(app, "detail_textures", "Detail texturing up close", "The ground and large walls get fine grain when close"),
-        slider_row(app, "night_brightness", "Night brightness", "Enhanced graphics: how much brighter the night is shown", &|v| if v < 0.01 { "Off".to_string() } else { format!("+{v:.2}") }),
-        slider_row(app, "led_glow", "LED glow", "How strongly the dots of LED destination displays glow", &|v| format!("{}/15", v as i64)),
-        slider_row(app, "led_mips", "LED mask mipmaps", "Keep the mip chain of the LED masks (smoother from a distance).", &|v| format!("{v:.2}")),
-        switch_row(app, "reflections", "Reflection maps (paint, chrome, glass)", later).filter(|_| !app.settings.ray_tracing()),
+        switch_row(app, "shadows", "Sun shadows", "Enables/Disables shadows").filter(|_| shown("shadows")),
+        pick("shadow_size", "Shadow map", later).filter(|_| shown("shadow_size")),
+        switch_row(app, "ssao", "Ambient occlusion", later).filter(|_| shown("ssao")),
+        pick("shadow_casters", "Shadows cast by", later).filter(|_| shown("shadow_casters")),
+        switch_row(app, "detail_textures", "Detail texturing up close", "The ground and large walls get fine grain when close").filter(|_| shown("detail_textures")),
+        slider_row(app, "night_brightness", "Night brightness", "Enhanced graphics: how much brighter the night is shown", &|v| if v < 0.01 { "Off".to_string() } else { format!("+{v:.2}") }).filter(|_| shown("night_brightness")),
+        slider_row(app, "led_glow", "LED glow", "How strongly the dots of LED destination displays glow", &|v| format!("{}/15", v as i64)).filter(|_| shown("led_glow")),
+        slider_row(app, "led_mips", "LED mip strength", "Lower: sharper LED dots that shimmer from a distance; higher: calmer, softer dots", &|v| format!("{v:.2}")).filter(|_| shown("led_mips")),
+        switch_row(app, "reflections", "Reflection maps (paint, chrome, glass)", later).filter(|_| shown("reflections")),
         switch_row(app, "clouds", "Clouds", later),
-        pick("cloud_quality", "Cloud quality", "Enhanced: the volumetric clouds marched in fewer steps - faster, a little grainier")
-            .filter(|_| matches!(crate::settings::graphics_mode(&app.settings.graphics), "enhanced" | "enhanced_plus") && app.settings.clouds),
+        pick("cloud_quality", "Cloud quality", "Enhanced: the volumetric clouds marched in fewer steps - faster, a little grainier").filter(|_| shown("cloud_quality") && app.settings.clouds),
         pick("rain_quality", "Rain quality", "Lower is faster: the drops on the glass painted less often, less spray and fewer streaks; Low shows OMSI 2's own rain on the glass (from the next bus loaded)"),
         switch_row(app, "windy_trees", "Windy trees", "The trees' leaves bend and sway in the wind and its gusts; with no wind they stand still"),
     ]
@@ -139,8 +140,8 @@ pub(super) fn options_pages(app: &App) -> Vec<Page> {
         pick("max_obj_dist", "Object distance", later),
         pick("min_obj_size", "Small objects", later),
         pick("mirror_size", "Mirrors", later),
-        pick("mirror_refresh", "Real-time reflections", "How often the mirrors are drawn: every frame, the street moves through them as smoothly as through the windscreen"),
-        pick("mirror_quality", "Mirror quality", "In Enhanced and Enhanced+: the mirrors shaded as the picture is, with its light and its sky, instead of the plain light"),
+        pick("mirror_refresh", "Bus mirror refresh", "How often the mirrors are drawn: every frame, the street moves through them as smoothly as through the windscreen"),
+        pick("mirror_quality", "Mirror quality", "In Enhanced and Enhanced+: the mirrors shaded as the picture is, with its light and its sky, instead of the plain light").filter(|_| shown("mirror_quality")),
         switch_row(app, "mirror_hud_every_frame", "Mirror panels every frame", "The mirror panels in the cab (Ctrl+M) are drawn every frame, as in ETS2, instead of taking turns with the other mirrors"),
         pick("texture_memory", "Texture memory", later),
         switch_row(app, "texture_compression", "Compress textures on loading", later),
@@ -458,6 +459,17 @@ pub(super) fn pages_of(app: &App, kind: &ListKind) -> Option<(Vec<Page>, usize)>
     Some((pages, tab))
 }
 
+fn shown_in_mode(mode: &str, key: &str) -> bool {
+    let mode = crate::settings::graphics_mode(mode);
+    match key {
+        "shadows" | "ssao" => !matches!(mode, "vanilla" | "enhanced_plus"),
+        "shadow_size" | "shadow_casters" | "detail_textures" => mode != "vanilla",
+        "reflections" => mode != "enhanced_plus",
+        "night_brightness" | "led_glow" | "led_mips" | "mirror_quality" | "cloud_quality" => matches!(mode, "enhanced" | "enhanced_plus"),
+        _ => true,
+    }
+}
+
 /// Which tab of a window (`kind`: Options, World ...) is the one titled `title` (the first if none is).
 pub(crate) fn tab_of(app: &App, kind: ListKind, title: &str) -> usize {
     pages_of(app, &kind).and_then(|(pages, _)| pages.iter().position(|p| p.0 == title)).unwrap_or(0)
@@ -484,4 +496,45 @@ pub(crate) fn page_titles(app: &App, kind: &ListKind) -> Option<(Vec<String>, us
     let r = (pages.iter().map(|p| p.0.to_string()).collect::<Vec<_>>(), tab);
     *app.menus.page_titles.borrow_mut() = Some((kind.clone(), vr_nav_available, std::time::Instant::now(), r.clone()));
     Some(r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shown_in_mode;
+    use crate::game_lists::{mode_of_session, text_in_mode};
+    use crate::startup::SessionSettings;
+
+    #[test]
+    fn graphics_rows_follow_the_sessions_mode() {
+        let keys = ["shadows", "shadow_size", "ssao", "shadow_casters", "detail_textures", "night_brightness", "led_glow", "led_mips", "reflections", "mirror_quality", "cloud_quality", "msaa"];
+        let shown = |mode: &str| keys.iter().filter(|k| shown_in_mode(mode, k)).copied().collect::<Vec<_>>();
+        assert_eq!(shown("vanilla"), ["reflections", "msaa"]);
+        assert_eq!(shown("vanilla_plus"), ["shadows", "shadow_size", "ssao", "shadow_casters", "detail_textures", "reflections", "msaa"]);
+        assert_eq!(shown("enhanced"), keys);
+        assert_eq!(shown("Enhanced+"), ["shadow_size", "shadow_casters", "detail_textures", "night_brightness", "led_glow", "led_mips", "mirror_quality", "cloud_quality", "msaa"]);
+    }
+    #[test]
+    fn the_running_sessions_mode_decides_what_it_forces() {
+        let file = "graphics=vanilla\nshadows=1\nssao=1\ndetail_textures=1\n";
+        assert!(!crate::settings::Settings::from_text(file).shadows);
+        let s = text_in_mode(file, "vanilla_plus");
+        assert_eq!(s.graphics, "vanilla_plus");
+        assert!(s.shadows && s.ssao && s.detail_textures && !s.classic());
+        let s = text_in_mode("graphics=enhanced_plus\nshadows=0\nssao=0\nreflections=0\n", "vanilla");
+        assert!(!s.ray_tracing() && !s.enhanced && !s.shadows && !s.ssao && !s.reflections);
+        let s = text_in_mode("graphics=vanilla\nshadows=0\n", "enhanced_plus");
+        assert!(s.ray_tracing() && s.enhanced && s.shadows && s.ssao && s.reflections);
+    }
+
+    #[test]
+    fn the_sessions_mode_comes_from_how_the_game_was_started() {
+        let session = |enhanced_plus, enhanced, classic| SessionSettings { enhanced_plus, enhanced, classic, ..Default::default() };
+        assert_eq!(mode_of_session(&session(false, false, true), "vanilla"), "vanilla");
+        assert_eq!(mode_of_session(&session(false, false, false), "vanilla_plus"), "vanilla_plus");
+        assert_eq!(mode_of_session(&session(false, true, false), "enhanced"), "enhanced");
+        assert_eq!(mode_of_session(&session(false, true, false), "enhanced_plus"), "enhanced_plus");
+        assert_eq!(mode_of_session(&session(false, true, false), "vanilla"), "enhanced");
+        assert_eq!(mode_of_session(&session(true, true, false), "vanilla"), "enhanced_plus");
+        assert_eq!(mode_of_session(&session(false, false, false), "enhanced"), "vanilla_plus");
+    }
 }

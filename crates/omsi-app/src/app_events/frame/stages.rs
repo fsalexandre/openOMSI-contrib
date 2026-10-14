@@ -157,11 +157,14 @@ pub(crate) struct WindowFrame<'a> {
     /// While the simulation's stages run: the tick's time, which they take instead of the
     /// frame's (see `ticked`).
     tick_dt: Option<f32>,
+    /// How many ticks the frame runs (see `set_tick_dt`): the stages that run once a frame
+    /// take them all at once, in its last tick.
+    ticks: u32,
 }
 
 impl<'a> WindowFrame<'a> {
     pub(crate) fn new(app: &'a mut App, event_loop: &'a ActiveEventLoop) -> Self {
-        WindowFrame { app, event_loop, time: None, controls: None, daylight: None, vr_nav_display: None, lighting: None, tick_dt: None }
+        WindowFrame { app, event_loop, time: None, controls: None, daylight: None, vr_nav_display: None, lighting: None, tick_dt: None, ticks: 1 }
     }
 
     /// The `App` between the frame's lists.
@@ -177,6 +180,11 @@ impl<'a> WindowFrame<'a> {
     /// The tick's time the simulation's stages take from now on (none: the frame's again).
     pub(super) fn set_tick_dt(&mut self, dt: Option<f32>) {
         self.tick_dt = dt;
+    }
+
+    /// How many ticks this frame runs (`frame_ticked`).
+    pub(super) fn set_ticks(&mut self, n: u32) {
+        self.ticks = n.max(1);
     }
 
     pub(super) fn daylight(&self) -> Option<omsi_sim::Daylight> {
@@ -196,6 +204,15 @@ impl frame_stages::Host<WindowStage> for WindowFrame<'_> {
         let times = self.time.as_ref().map(|t| (t.dt, t.raw_dt));
         let tick_dt = self.tick_dt;
         let dt = || tick_dt.unwrap_or_else(|| times.expect(NO_TIME).0);
+        // The people, the duty and the weather move on once a frame, in its last tick, by
+        // all of the frame's ticks at once - as they did before the fixed step (0.2.39).
+        // Run in every tick, a slow frame (four ticks below 15 fps) made them cost four
+        // times as much, which slowed the frame further: on big maps the frame rate fell to
+        // a few frames a second and stayed there. The player's bus and the traffic's bodies
+        // keep the fixed step.
+        let ticks = self.ticks;
+        let once_a_frame = tick_dt.is_none() || app.fixed_tick.view_due();
+        let frame_step = || tick_dt.map(|d| d * ticks as f32).unwrap_or_else(|| times.expect(NO_TIME).0);
         match stage {
             Timing => match app.frame_timing(el) {
                 Some(t) => self.time = Some(t),
@@ -225,13 +242,29 @@ impl frame_stages::Host<WindowStage> for WindowFrame<'_> {
             Audio => super::driving::audio(super::driving::AudioCx::of(&mut app.parts()), dt()),
             Lan => app.frame_lan(dt()),
             OnFoot => super::people::on_foot(crate::on_foot::OnFootCx::of(&mut app.parts()), dt()),
-            Humans => super::people::humans(super::people::HumansCx::of(&mut app.parts()), dt()),
-            AfterHumans => super::people::after_humans(super::people::AfterHumansCx::of(&mut app.parts()), dt()),
-            Duty => app.frame_duty(dt()),
+            Humans => {
+                if once_a_frame {
+                    super::people::humans(super::people::HumansCx::of(&mut app.parts()), frame_step());
+                }
+            }
+            AfterHumans => {
+                if once_a_frame {
+                    super::people::after_humans(super::people::AfterHumansCx::of(&mut app.parts()), frame_step());
+                }
+            }
+            Duty => {
+                if once_a_frame {
+                    app.frame_duty(frame_step());
+                }
+            }
             Integrations => app.frame_integrations(el, dt()),
             ViewKeys => super::view_keys::view_keys(super::view_keys::ViewKeysCx::of(&mut app.parts()), dt()),
             Drawn => app.frame_drawn(),
-            Weather => self.daylight = Some(app.frame_weather(dt())),
+            Weather => {
+                if once_a_frame {
+                    self.daylight = Some(app.frame_weather(frame_step()));
+                }
+            }
             Lights => {
                 let daylight = self.daylight.expect(NO_DAYLIGHT);
                 let behind = app.drawn_behind();

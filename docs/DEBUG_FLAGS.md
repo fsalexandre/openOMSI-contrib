@@ -295,6 +295,7 @@ effect. On Android, `openOMSI/env.txt` holds `NAME=value` lines that are set bef
 | `OMSI_NO_SPRAY` | bool | off | use | app | No tyre spray. |
 | `OMSI_NO_SURF` | bool | off | once | scene | Every road as smooth as before (no surface texture) (A/B). |
 | `OMSI_NO_TEXCOMPRESS` | bool | off | use | render | No runtime texture compression. |
+| `OMSI_NO_TEXTURE_CACHE` | bool | off | once | texture | Compress every texture at each start (no ~/.openomsi/cache/textures). |
 | `OMSI_NO_TUNNEL` | bool | off | use | lan | LAN: no tunnel. |
 | `OMSI_NO_UPDATE` | bool | off | use | app, launcher-api | No update check. |
 | `OMSI_NO_VAR_SYNC` | bool | off | use | lan | LAN: no variable sync. |

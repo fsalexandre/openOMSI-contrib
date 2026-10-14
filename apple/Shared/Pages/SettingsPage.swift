@@ -75,6 +75,7 @@ struct SettingsPage: View {
         let mode = store.setting("graphics")?.string ?? "vanilla_plus"
         let classic = mode == "vanilla"
         let traced = mode == "enhanced_plus"
+        let enhanced = mode.hasPrefix("enhanced")
         return Card("Graphics") {
             SettingSelect(label: "Graphics", key: "graphics", options: [("vanilla", "Vanilla (as OMSI 2)"), ("vanilla_plus", "Vanilla+"), ("enhanced", "Enhanced"), ("enhanced_plus", "Enhanced+")])
             PresetRow(mode: mode)
@@ -89,6 +90,8 @@ struct SettingsPage: View {
                 }
                 SettingSelect(label: "Shadows cast by", key: "shadow_casters", options: [("all", "Every solid mesh"), ("omsi", "[shadow] meshes, as OMSI")])
                 SettingToggle(label: "Detail texturing up close", key: "detail_textures", fallback: true)
+            }
+            if enhanced {
                 SettingSlider(label: "Night brightness", key: "night_brightness", range: 0 ... 3, step: 0.25, fallback: 0) { $0 < 0.01 ? "Off" : String(format: "+%.2f", $0) }
                 SettingSlider(label: "LED glow", key: "led_glow", range: 0 ... 15, step: 1, fallback: 6) { $0 < 0.5 ? "Off" : "\(Int($0))" }
                 SettingSlider(label: "LED mip strength", key: "led_mips", range: 0 ... 4, step: 0.05, fallback: 1.3) { $0 < 0.005 ? "Off" : String(format: "%.2f", $0) }
@@ -96,7 +99,7 @@ struct SettingsPage: View {
             SettingToggle(label: "OMSI's shadow meshes (under vehicles)", key: "shadow_blobs", fallback: true)
             if !traced { SettingToggle(label: "Reflection maps (paint, chrome, glass)", key: "reflections", fallback: true) }
             SettingToggle(label: "Clouds", key: "clouds", fallback: true)
-            if mode.hasPrefix("enhanced") && store.flag("clouds", true) {
+            if enhanced && store.flag("clouds", true) {
                 SettingSelect(label: "Cloud quality", key: "cloud_quality", options: [("high", "High"), ("low", "Low")])
             }
             SettingSelect(label: "Rain quality", key: "rain_quality", options: [("high", "High"), ("medium", "Medium"), ("low", "Low")])
@@ -117,7 +120,7 @@ struct SettingsPage: View {
             SettingSelect(label: "Object distance", key: "max_obj_dist", options: [("auto", "Automatic"), ("500", "500 m"), ("750", "750 m"), ("900", "900 m"), ("1500", "1500 m"), ("3000", "3000 m")])
             SettingSelect(label: "Small objects", key: "min_obj_size", options: [("0.005", "All"), ("0.013", "Normal"), ("0.02", "Fewer (faster)"), ("0.03", "Few (fastest)")])
             SettingSelect(label: "Mirrors", key: "mirror_size", options: [("0", "Off"), ("128", "Low (128)"), ("256", "Normal (256)"), ("512", "High (512)"), ("1024", "Very high (1024)")])
-            SettingSelect(label: "Real-time reflections", key: "mirror_refresh", options: [("off", "None (frozen picture)"), ("eco", "Economical"), ("full", "Full")])
+            SettingSelect(label: "Bus mirror refresh", key: "mirror_refresh", options: [("off", "None (frozen picture)"), ("eco", "Economical"), ("full", "Full")])
             SettingSelect(label: "Texture memory", key: "texture_memory", options: [("0", "Automatic"), ("500", "500 MB"), ("1000", "1 GB"), ("1500", "1.5 GB"), ("2000", "2 GB"), ("3000", "3 GB"), ("4000", "4 GB"), ("6000", "6 GB")])
             SettingToggle(label: "Compress textures on loading", key: "texture_compression", fallback: true)
             SettingToggle(label: "DXT/BC textures stay compressed on the GPU", key: "gpu_texture_compression", fallback: true)

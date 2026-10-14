@@ -87,8 +87,11 @@ zip.workspace = true
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 arboard = { version = "3", default-features = false }
 rfd.workspace = true
-# the allocator of the desktop game (see main.rs)
-mimalloc = { version = "0.1.52", default-features = false }
+# the allocator of the desktop game (see main.rs). Its version 2: version 3, the crate's
+# default, counts bits with the POPCNT instruction wherever MSVC builds it, and a processor
+# without it (a Core 2) stopped on an illegal instruction before the game began (0xC000001D,
+# from 0.2.36 on, #2484); version 2 needs nothing past the x86-64 every Windows PC has.
+mimalloc = { version = "0.1.52", default-features = false, features = ["v2"] }
 
 # Steam's rich presence: only where `assets/steam_redist` has the library (the build script
 # sets `cfg(steam)` for the same targets and puts the library beside the binary)

@@ -194,6 +194,9 @@ pub struct VehicleInstance {
     /// the coupled parts and the scripts still run every frame.
     pub ai_visuals: bool,
     ai_visuals_missed: f32,
+    /// The coupled parts were moved on in the traffic's step already (`step_ai_trailers`):
+    /// the frame's scripts and animations leave them be.
+    trailers_stepped: bool,
     /// Variable names (lower case) to their slots; shared with the view's snapshot
     /// (`crate::view_events::CarLooks`), copied only when the vehicle gains a variable.
     var_index: std::sync::Arc<HashMap<String, omsi_script::VarId>>,

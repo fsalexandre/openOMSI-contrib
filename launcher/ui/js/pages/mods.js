@@ -4,9 +4,9 @@
 import { html, useState, useEffect } from '../../vendor/preact-htm.js';
 import { useStore, set, toast } from '../store.js';
 import { t, bytes, ago } from '../i18n.js';
-import { call } from '../api.js';
+import { call, onPhone } from '../api.js';
 import { Icon } from '../icons.js';
-import { Button, Card, Empty, PageHead, Search, Select, Spinner, Tag, Toggle, Notice, useConfirm } from '../ui.js';
+import { Button, Card, Dialog, Empty, PageHead, Search, Select, Spinner, Tag, Toggle, Notice, useConfirm } from '../ui.js';
 import { pollNow, loadContent, cached, installMod, jobRunning } from '../data.js';
 
 const KIND = { bus: ['bus', 'Bus'], map: ['map', 'Map'], archive: ['folder', 'Archive'], other: ['puzzle', 'Other'] };
@@ -24,7 +24,14 @@ export function ModsPage() {
   useEffect(() => {
     read();
   }, []);
+  const [browsing, setBrowsing] = useState(null);
   const pick = async (archive) => {
+    // (a phone has no file dialog: the page browses its storage itself, as the phone's
+    // launcher did up to 0.2.34 - the buttons did nothing there since, #2513)
+    if (onPhone) {
+      setBrowsing({ archive });
+      return;
+    }
     const p = await call('pick_mod', { archive }).catch(() => null);
     if (p) installMod(p);
   };
@@ -71,6 +78,10 @@ export function ModsPage() {
   };
   const info = s.modInfo;
   return html`
+    ${browsing && html`<${StorageBrowser} archive=${browsing.archive} onClose=${() => setBrowsing(null)} onPick=${(p) => {
+      setBrowsing(null);
+      installMod(p);
+    }} />`}
     <${PageHead} title="Mods" text="A bus, a map, scenery, a whole OMSI folder - as a folder or a .zip, .7z or .rar. The original OMSI 2 folder is never written to." />
     <div class="drive" style="grid-template-columns:minmax(0,1fr) 360px">
       <div class="stack">
@@ -166,4 +177,40 @@ function Job({ j }) {
     ${j.message && html`<div class=${'small ' + (j.state === 'failed' ? '' : 'muted')} style=${j.state === 'failed' ? 'color:var(--danger)' : ''}>${j.message}</div>`}
     ${j.warnings?.length > 0 && html`<div class="small" style="color:var(--warn)">${j.warnings.join(' - ')}</div>`}
   </div>`;
+}
+
+// A phone's storage, a folder at a time: the folder to install (a mod unpacked there) or one
+// of its archives.
+function StorageBrowser({ archive, onClose, onPick }) {
+  const [dir, setDir] = useState(null);
+  const [error, setError] = useState(null);
+  const open = async (path) => {
+    try {
+      setDir(await call('list_dir', { path, archives: archive }));
+      setError(null);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+  useEffect(() => {
+    open(null);
+  }, []);
+  const join = (name) => `${dir.path.replace(/\/$/, '')}/${name}`;
+  const footer = html`
+    ${!archive && dir && html`<${Button} kind="primary" icon="download" label="Install this folder" onClick=${() => onPick(dir.path)} />`}
+    <${Button} label="Close" onClick=${onClose} />`;
+  return html`<${Dialog} title=${archive ? 'Choose an archive' : 'Choose a folder'} onClose=${onClose} footer=${footer}>
+    <div class="stack" style="gap:8px">
+      ${error && html`<${Notice} kind="danger">${error}</${Notice}>`}
+      ${!dir && !error && html`<${Spinner} />`}
+      ${dir && html`
+        <p class="dim selectable" style="overflow-wrap:anywhere">${dir.path}</p>
+        <div class="stack" style="gap:4px;max-height:50vh;overflow:auto">
+          ${dir.parent && html`<${Button} kind="ghost" icon="left" label=".." onClick=${() => open(dir.parent)} />`}
+          ${dir.dirs.map((d) => html`<${Button} kind="ghost" icon="folder" label=${d} onClick=${() => open(join(d))} />`)}
+          ${dir.files.map((f) => html`<${Button} kind="ghost" icon="file" label=${f} onClick=${() => onPick(join(f))} />`)}
+          ${!dir.dirs.length && !dir.files.length && html`<p class="dim">${t('Nothing here')}</p>`}
+        </div>`}
+    </div>
+  </${Dialog}>`;
 }

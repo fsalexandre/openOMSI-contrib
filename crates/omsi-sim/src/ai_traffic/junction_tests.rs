@@ -854,3 +854,47 @@ fn a_driver_letting_in_a_car_that_waits_for_his_queue_takes_his_right_of_way_bac
     let going: Vec<usize> = (0..4).filter(|&k| t.cars[k].yield_pass > t.time).collect();
     assert_eq!(going, vec![0]);
 }
+
+#[test]
+fn a_circle_held_by_the_rules_and_the_cars_that_follow_is_sorted_out() {
+    use super::deadlock::Hold;
+    // car 0 gives way to car 1 by the rules, car 1 follows car 2, car 2 waits for car 3's
+    // claim, car 3 follows car 0: no body in anybody's way, nobody ever moved on its own
+    let f = Fixture::new();
+    let tangled = |stood: f32| {
+        let mut t = circle_of_four(&f, Hold::Lead, [9.0, 0.0, 6.0, 0.0]);
+        t.cars[0].holds[0].1 = Hold::Rule;
+        t.cars[2].holds[0].1 = Hold::Claim;
+        for c in t.cars.iter_mut() {
+            c.stopped = stood;
+        }
+        t
+    };
+    // not before they have all stood eight seconds
+    let mut t = tangled(5.0);
+    t.resolve_waits();
+    assert!(t.cars.iter().all(|c| c.yield_pass == f32::MIN));
+    let mut t = tangled(10.0);
+    t.resolve_waits();
+    let going: Vec<usize> = (0..4).filter(|&k| t.cars[k].yield_pass > t.time).collect();
+    assert_eq!(going, vec![0], "the longest waiter held by the rules goes, alone");
+    let claims: Vec<bool> = t.cars.iter().map(|c| !c.reserved.is_empty()).collect();
+    assert_eq!(claims, vec![true, false, false, false], "the others let their claims go");
+    // one of them waits for a body: nobody is forced
+    let mut t = tangled(10.0);
+    t.cars[1].holds[0].1 = Hold::Body;
+    t.resolve_waits();
+    assert!(t.cars.iter().all(|c| c.yield_pass == f32::MIN));
+}
+
+#[test]
+fn a_driver_standing_at_his_line_can_still_stop() {
+    // standing 60 cm short of the meeting place: he can (his early claim does not take
+    // the right of way), rolling at 3 m/s as close he cannot
+    assert!(stops_before(0.0, 0.6));
+    assert!(!stops_before(0.0, 0.2));
+    assert!(!stops_before(3.0, 0.6));
+    assert!(stops_before(3.0, 10.0));
+    // of two close in time, the one standing at its line does not go first for it
+    assert!(goes_first((1.0, 8.0, 4.0, 9), (1.4, 0.6, 0.0, 1)));
+}

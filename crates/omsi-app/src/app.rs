@@ -775,6 +775,15 @@ impl App {
             self.start_world(w, cam, &renderer, &mut scene);
             self.renderer = Some(renderer);
             self.scene = Some(scene);
+            // Started again after the graphics card was lost (`restart_after_device_loss`):
+            // said on the screen. The restart with lighter graphics, and on Windows another
+            // graphics interface, was silent, and players took the blurred picture and the
+            // lower frame rate it left for a slower game, never for a crash of the driver.
+            if let Some(n) = omsi_cfg::flags::OMSI_SAFE_GPU.parse::<u32>().filter(|n| *n > 0) {
+                log::warn!("this run was started again after the graphics device was lost ({n}): lighter graphics for this run");
+                self.service_msg = Some(("The graphics driver reset the card: the game started again with lighter graphics for this drive. Settings → Graphics keeps yours for the next start.".into(), 12.0));
+            }
+            // our player's bus is offered to the session it joined, under its loading screen
             if let Some(p) = self.player.as_ref() {
                 let cfg = self.args.lan_config();
                 let root = self.args.root.clone();

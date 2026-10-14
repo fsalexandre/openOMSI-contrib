@@ -299,6 +299,9 @@ fn place_vehicles(app: &App, unknown: &str) -> Vec<(String, String, String, Stri
         .collect()
 }
 
+/// The livery list's "Original paint": the model's own textures, no paint scheme.
+const ORIGINAL_PAINT: &str = "\u{1}original";
+
 /// The paint schemes of a vehicle file, by name (without loading its meshes).
 fn liveries(def: &omsi_vehicle::Vehicle) -> Vec<String> {
     let Some(m) = def.model.as_ref() else { return Vec::new() };
@@ -653,6 +656,9 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
         }
         ListKind::PlaceLivery(bus) => {
             out.push((tr("Random livery"), "livery ".into()));
+            // the model's own textures, without a paint scheme: since "Random livery" draws
+            // among the schemes (0.2.46), the bus's main livery could not be had (#2598)
+            out.push((tr("Original paint"), format!("livery {ORIGINAL_PAINT}")));
             let mut names = bus_def(app, bus).map(|d| liveries(&d)).unwrap_or_default();
             // (alphabetical)
             names.sort_by_key(|n| n.to_lowercase());
@@ -1051,7 +1057,9 @@ pub(crate) fn run_move(app: &mut App, kind: &ListKind, action: &str, mv: Move) -
             let (bus, mut paint, hof) = (bus.clone(), paint.clone(), arg.trim().to_string());
             // "Random livery": one of the bus's liveries, drawn now (#2410: no livery asked
             // for gave the model's own textures every time)
-            if paint.trim().is_empty() {
+            if paint == ORIGINAL_PAINT {
+                paint.clear();
+            } else if paint.trim().is_empty() {
                 let names = bus_def(app, &bus).map(|d| liveries(&d)).unwrap_or_default();
                 paint = pick_random(&names, fresh_seed()).cloned().unwrap_or_default();
             }

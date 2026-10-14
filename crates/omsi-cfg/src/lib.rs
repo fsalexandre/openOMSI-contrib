@@ -32,6 +32,7 @@ pub mod number;
 pub mod par;
 pub mod radio;
 pub mod panic_guard;
+pub mod profile_keys;
 pub mod vfs;
 pub mod install_search;
 pub mod copied_install;

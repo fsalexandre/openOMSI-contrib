@@ -33,6 +33,7 @@ impl App {
                 app.fixed_tick.remember(app.player.as_ref().map(|p| &p.vehicle));
             }
             frame.set_tick_dt(Some(tick_dt));
+            frame.set_ticks(ticks.n);
             let flow = crate::frame_stages::run(&mut frame, FRAME_TICK);
             frame.set_tick_dt(None);
             flow?;

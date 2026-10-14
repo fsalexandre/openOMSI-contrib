@@ -109,6 +109,7 @@ impl Traffic {
             pull_out: 0.0,
             rail_trail: Default::default(),
             ai_secs: 0.0,
+            script_owed: 0.0,
             consist_reversed: false,
             waits_on: None,
             yield_to: None,

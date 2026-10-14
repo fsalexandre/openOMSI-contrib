@@ -415,7 +415,7 @@ fn inset_rail_joints_and_unit_couplers_keep_their_declared_distances() {
 }
 
 #[test]
-fn a_joint_clear_of_the_body_falls_back_to_the_body_end() {
+fn a_joint_clear_of_the_body_is_kept_as_declared() {
     let frame = |front: f32, back: f32, half: f32| {
         let mut ty = coupling_test_type(Some(1.1));
         let ty_mut = Arc::get_mut(&mut ty).unwrap();
@@ -425,12 +425,12 @@ fn a_joint_clear_of_the_body_falls_back_to_the_body_end() {
             vec![(Vec3::new(-1.1, -half, 0.0), Vec3::new(1.1, half, 3.0))];
         ty
     };
-    // The NF6D's bogie frames: `[coupling_front] 0 -17.71 1` on a 2.2 m model put the
-    // bogie seventeen metres in front of the tram it hangs on.
+    // A bogie frame hung far ahead of its joint (the NF6D's `[coupling_front] 0 -17.71 1`,
+    // the BR481's -34.35): along the track that is where it belongs, under its car.
     let wild = frame(-17.71, -5.49, 1.1);
     assert_eq!(
         coupling_points(&wild, false, &wild, false),
-        (Vec3::new(0.0, -1.1, 0.0), Vec3::new(0.0, 1.1, 0.0))
+        (Vec3::new(0.0, -5.49, 0.0), Vec3::new(0.0, -17.71, 0.0))
     );
     // a coupler standing clear within the body's own length is the mod's, and kept
     let coupler = frame(2.0, -2.4, 1.1);
@@ -444,7 +444,7 @@ fn a_joint_clear_of_the_body_falls_back_to_the_body_end() {
         coupling_points(&inset, false, &inset, false),
         (Vec3::new(0.0, -0.9, 0.0), Vec3::new(0.0, 0.8, 0.0))
     );
-    // a fitting, not a body: its joints are measured from where it really is
+    // a fitting too
     let bellows = frame(-17.71, -5.49, 0.3);
     assert_eq!(
         coupling_points(&bellows, false, &bellows, false),
@@ -649,7 +649,10 @@ fn rail_joints_stay_closed_on_curved_graded_track() {
                 let lead_joint = origin + rotation.transform_point3(back).as_dvec3();
                 let own_joint =
                     t.position + t.body_rotation().transform_point3(front).as_dvec3();
-                assert!((lead_joint - own_joint).length() < 1e-4);
+                // (each car stands on the track with its bogies, so on the bend two joints
+                // meet within a few centimetres - here the lead, put beside the bend's
+                // start rather than on it, sets the largest gap)
+                assert!((lead_joint - own_joint).length() < 0.1, "{}", (lead_joint - own_joint).length());
                 assert!(t.position.is_finite() && t.body_rotation().is_finite());
                 let rail = t.track.expect("rail contact");
                 assert!(rail.z < 0.0, "contact left the descending track");

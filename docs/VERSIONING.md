@@ -8,6 +8,8 @@
 | `MINOR` | the second number in `VERSION`, changed by hand | `1.2` |
 | `COMMIT` | counted automatically: commits on `main` since `VERSION` last changed (not counting those marked `[skip ci]` or `[skip actions]`, which are never released) | `1.2.17` |
 
+Commits pushed between two releases still count, so the version of a release skips the
+numbers of the commits that were never released on their own.
 `COMMIT` restarts from `0` whenever `VERSION` changes: after `1.1.23`, a commit that sets
 `VERSION` to `1.2` is released as `1.2.0`, and the next one as `1.2.1`.
 
@@ -28,7 +30,7 @@ There are two channels:
 
 | Channel | What it is | Who gets it |
 | --- | --- | --- |
-| **Beta** | every push to `main`, published as a GitHub **pre-release** | testers: the launcher's **Settings → General → Updates → Update channel: Beta**, or the [Releases](https://github.com/openOMSI-org/openOMSI/releases) page |
+| **Beta** | a build of `main` a maintainer starts by hand, published as a GitHub **pre-release** | testers: the launcher's **Settings → General → Updates → Update channel: Beta**, or the [Releases](https://github.com/openOMSI-org/openOMSI/releases) page |
 | **Stable** | a beta the maintainers have tested and promoted | every other player: on the Stable channel (the default) the launcher's updater, the start guard, the website's Download page, `releases/latest` and the README badge only ever see stable releases |
 
 On the Beta channel the updater offers the newest release, beta or stable, that has a file
@@ -37,9 +39,11 @@ the betas too (marked *Beta*). Changing the channel looks for an update again at
 beta installed stays until a newer stable release comes out, or an older one is chosen in
 *Choose a version…*.
 
-### Beta: every push to `main`
+### Beta: a release started by hand
 
-Every push to `main` runs [`.github/workflows/release.yml`](../.github/workflows/release.yml):
+A push to `main` publishes nothing by itself. A maintainer starts a release with **Actions →
+Release → Run workflow** from `main` (or `gh workflow run release.yml --ref main`), which runs
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) for the commit `main` is on:
 
 1. works out the version with `scripts/version.sh`;
 2. builds Windows x64 and ARM64 (MSVC), macOS for Apple silicon and Intel, Linux x64 and
@@ -131,3 +135,7 @@ and never offered again.
 the Markdown files of `docs/` to GitHub Pages
 (https://openomsi.org/) whenever they change on `main`. The site renders
 the Markdown in the browser, so a documentation change is one edit in `docs/`.
+The Download page offers the latest stable release. Beta downloads have a separate page
+with the same platform cards and installation instructions; when no beta is newer than
+stable, it links back to stable instead of offering an older build. The release history
+has separate Stable and Betas lists. Auxiliary asset packs are kept out of both lists.

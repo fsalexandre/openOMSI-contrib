@@ -42,6 +42,7 @@ const snap = (step) => (v) => Number((Math.round(v / step) * step).toFixed(4));
 const mode = (s) => s.graphics || 'vanilla_plus';
 const classic = (s) => mode(s) === 'vanilla';
 const traced = (s) => mode(s) === 'enhanced_plus';
+const enhanced = (s) => mode(s) === 'enhanced' || traced(s);
 const mobile = (s, p) => p === 'android' || p === 'ios';
 const windows = (s, p) => p === 'windows';
 const tripleOn = (s) => !!s.triple_screen;
@@ -95,15 +96,15 @@ const graphics = {
         { type: 'toggle', key: 'shadows', label: 'Sun shadows', when: (s) => !classic(s) && !traced(s) },
         { type: 'select', key: 'shadow_casters', label: 'Shadows cast by', options: [['all', 'Every solid mesh'], ['omsi', '[shadow] meshes, as OMSI']], when: (s) => !classic(s) },
         { type: 'toggle', key: 'detail_textures', label: 'Detail texturing up close', when: (s) => !classic(s) },
-        { type: 'slider', key: 'night_brightness', label: 'Night brightness', min: 0, max: 3, step: 0.25, def: 0, format: (v) => (v < 0.01 ? t('Off') : `+${v.toFixed(2)}`), store: snap(0.25), when: (s) => !classic(s) },
-        { type: 'slider', key: 'led_glow', label: 'LED glow', min: 0, max: 15, step: 1, def: 6, format: (v) => (v < 0.5 ? t('Off') : String(Math.trunc(v))), store: round, when: (s) => !classic(s) },
-        { type: 'slider', key: 'led_mips', label: 'LED mip strength', min: 0, max: 4, step: 0.05, def: 1.3, format: (v) => (v < 0.005 ? t('Off') : v.toFixed(2)), store: snap(0.05), when: (s) => !classic(s) },
+        { type: 'slider', key: 'night_brightness', label: 'Night brightness', min: 0, max: 3, step: 0.25, def: 0, format: (v) => (v < 0.01 ? t('Off') : `+${v.toFixed(2)}`), store: snap(0.25), when: enhanced },
+        { type: 'slider', key: 'led_glow', label: 'LED glow', min: 0, max: 15, step: 1, def: 6, format: (v) => (v < 0.5 ? t('Off') : String(Math.trunc(v))), store: round, when: enhanced },
+        { type: 'slider', key: 'led_mips', label: 'LED mip strength', min: 0, max: 4, step: 0.05, def: 1.3, format: (v) => (v < 0.005 ? t('Off') : v.toFixed(2)), store: snap(0.05), when: enhanced },
         // (the `[isshadow]` blob under a vehicle is drawn in every mode, the vanilla one included)
         { type: 'toggle', key: 'shadow_blobs', label: "OMSI's shadow meshes (under vehicles)" },
         { type: 'toggle', key: 'reflections', label: 'Reflection maps (paint, chrome, glass)', when: (s) => !traced(s) },
         { type: 'toggle', key: 'clouds', label: 'Clouds' },
         // (only the enhanced modes march volumetric clouds; the vanilla ones are a texture)
-        { type: 'select', key: 'cloud_quality', label: 'Cloud quality', options: [['high', 'High'], ['low', 'Low']], when: (s) => (mode(s) === 'enhanced' || mode(s) === 'enhanced_plus') && s.clouds !== false },
+        { type: 'select', key: 'cloud_quality', label: 'Cloud quality', options: [['high', 'High'], ['low', 'Low']], when: (s) => enhanced(s) && s.clouds !== false },
         { type: 'select', key: 'rain_quality', label: 'Rain quality', options: [['high', 'High'], ['medium', 'Medium'], ['low', 'Low']] },
         { type: 'toggle', key: 'windy_trees', label: 'Windy trees' },
       ],
@@ -123,8 +124,8 @@ const graphics = {
         { type: 'select', key: 'max_obj_dist', label: 'Object distance', options: [['auto', 'Automatic'], ['500', '500 m'], ['750', '750 m'], ['900', '900 m'], ['1500', '1500 m'], ['3000', '3000 m']] },
         { type: 'select', key: 'min_obj_size', label: 'Small objects', options: [['0.005', 'All'], ['0.013', 'Normal'], ['0.02', 'Fewer (faster)'], ['0.03', 'Few (fastest)']] },
         { type: 'select', key: 'mirror_size', label: 'Mirrors', options: [['0', 'Off'], ['128', 'Low (128)'], ['256', 'Normal (256)'], ['512', 'High (512)'], ['1024', 'Very high (1024)']] },
-        { type: 'select', key: 'mirror_refresh', label: 'Real-time reflections', options: [['off', 'None (frozen picture)'], ['eco', 'Economical'], ['full', 'Full'], ['every', 'Every frame (smoothest)']] },
-        { type: 'select', key: 'mirror_quality', label: 'Mirror quality', options: [['standard', 'Standard'], ['enhanced', 'As the picture (Enhanced)']] },
+        { type: 'select', key: 'mirror_refresh', label: 'Bus mirror refresh', options: [['off', 'None (frozen picture)'], ['eco', 'Economical'], ['full', 'Full'], ['every', 'Every frame (smoothest)']] },
+        { type: 'select', key: 'mirror_quality', label: 'Mirror quality', options: [['standard', 'Standard'], ['enhanced', 'As the picture (Enhanced)']], when: enhanced },
         { type: 'toggle', key: 'mirror_hud_every_frame', label: 'Mirror panels every frame' },
         { type: 'select', key: 'texture_memory', label: 'Texture memory', options: textureMemory },
         { type: 'toggle', key: 'texture_compression', label: 'Compress textures on loading' },
@@ -424,6 +425,6 @@ export const SETTINGS_TABS = [graphics, driving, camera, sound, gameplay, genera
 
 /** The settings a saved graphics profile holds (`GRAPHICS_PROFILE_KEYS`). */
 export const GRAPHICS_PROFILE_KEYS = [
-  'graphics', 'msaa', 'render_scale', 'anisotropy', 'shadow_size', 'ssao', 'shadows', 'shadow_casters', 'detail_textures', 'led_glow', 'led_mips', 'reflections', 'clouds', 'cloud_quality', 'rain_quality', 'windy_trees',
-  'vsync', 'max_fps', 'view_distance', 'max_obj_dist', 'min_obj_size', 'mirror_size', 'mirror_refresh', 'mirror_quality', 'mirror_hud_every_frame', 'texture_memory', 'texture_compression',
+  'graphics', 'msaa', 'render_scale', 'anisotropy', 'shadow_size', 'ssao', 'shadows', 'shadow_casters', 'detail_textures', 'night_brightness', 'led_glow', 'led_mips', 'shadow_blobs', 'reflections', 'clouds', 'cloud_quality', 'rain_quality', 'windy_trees',
+  'vsync', 'max_fps', 'view_distance', 'max_obj_dist', 'min_obj_size', 'mirror_size', 'mirror_refresh', 'mirror_quality', 'mirror_hud_every_frame', 'texture_memory', 'texture_compression', 'gpu_texture_compression',
 ];

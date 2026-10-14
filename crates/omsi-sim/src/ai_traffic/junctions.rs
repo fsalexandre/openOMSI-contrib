@@ -36,7 +36,7 @@ pub fn lets_in(v: f32, decel: f32, room: f32) -> bool {
 /// at 50 km/h a dozen metres off stopped in an emergency for one that rolled out at walking
 /// pace.
 pub fn goes_first((t_j, theirs, v_o, id_o): (f32, f32, f32, u64), (t_mine, my_room, v, me): (f32, f32, f32, u64)) -> bool {
-    let (i_must_go, they_must_go) = (my_room < firm_stop(v), theirs < firm_stop(v_o));
+    let (i_must_go, they_must_go) = (!stops_before(v, my_room), !stops_before(v_o, theirs));
     if i_must_go != they_must_go && (t_j - t_mine).abs() <= 1.0 {
         return they_must_go;
     }
@@ -65,6 +65,19 @@ pub fn firm_stop(v: f32) -> f32 {
     // (4 m/s²: firm, but short of what counts as an emergency stop)
     v * v / (2.0 * MAX_BRAKE * 0.5) + 0.3 * v + 1.0
 }
+
+/// Can a driver at `v` m/s, `room` m before a meeting place, still stop before it? One who
+/// stands short of it always can. `firm_stop` keeps a metre in hand, and a car waiting at
+/// its line (60 cm off) counted as one that could not stop any more: its early claim took
+/// the right of way from the traffic it gives way to, so the cars going round a roundabout
+/// stopped for each car standing at an entry (#2257), and of two cars close in time it was
+/// the one standing at its line that went first.
+pub fn stops_before(v: f32, room: f32) -> bool {
+    room > firm_stop(v) || (v < STANDING && room > 0.3)
+}
+
+/// Below this speed (m/s) a driver counts as standing for `stops_before`.
+const STANDING: f32 = 0.3;
 
 /// The junction lanes each car has claimed this step (by car index) and the room on the
 /// exits promised to the cars admitted: (car, metres, odometer reading at the exit) per
@@ -519,8 +532,8 @@ impl TrafficSim {
     /// junction on a crossing path, to anyone who has claimed a crossing path and arrives
     /// before it could be through, to traffic with the right of way that is close enough in
     /// time (its `accept_gap`), to pedestrians on a crossing, and it does not drive into a
-    /// junction it could not leave (no room on the exit, or the queue ahead standing with
-    /// no room behind it beyond the junction's last meeting place). A driver who has decided
+    /// junction it could not leave (no room on the exit, or the queue ahead standing where
+    /// the car would stop behind it in a meeting place of its way). A driver who has decided
     /// to go keeps to it (the claim stands, until its tail has left the junction's lanes)
     /// unless someone is actually in the way: weighing the gap again every step made two
     /// cars take turns at stopping and going, a hard brake every other step. Only a driver
@@ -744,8 +757,8 @@ impl TrafficSim {
     /// Otherwise (true, the vehicle it waits for). The exit must take the whole car (`need`)
     /// besides what has been promised to the cars let in before it, up to the first
     /// vehicle standing or crawling there; and with the traffic ahead on its way standing,
-    /// the car's rear must be clear of the junction's last meeting place where it would
-    /// stop behind it ("don't block the box", StVO §11(1)). `late`: the car has started off
+    /// the car must not stop behind it with its body in a meeting place of its way through
+    /// ("don't block the box", StVO §11(1)). `late`: the car has started off
     /// its line or could not stop comfortably any more - a queue that only will stand does
     /// not stop it then.
     #[allow(clippy::too_many_arguments)]
@@ -794,7 +807,7 @@ impl TrafficSim {
             }
         }
         // don't block the box: the queue ahead stands beyond the line and the car would
-        // stop with its rear in the last meeting place of its way through
+        // stop behind it in a meeting place of its way through
         if late {
             return (false, None);
         }
@@ -803,20 +816,33 @@ impl TrafficSim {
         if lead_rear < entry + 0.5 {
             return (false, None); // queued before the line: that is `queued`
         }
-        let last = jn
+        // Where its body would stand behind that car (from its rear to its front), and the
+        // meeting places of its way through that body would cover. It is kept out of those
+        // only: the rule used to be that its rear had to be clear of the last meeting place
+        // of its whole way, and on a big crossing object (a divided road, crosswalks inside
+        // it, the turns joining the way out at the object's far end) that place is 50 m in.
+        // Behind a car standing anywhere inside - pulled in to turn, at a light further in,
+        // queued from the road out - every car then stopped at the object's edge and left
+        // the junction empty (#2592), and the queue it formed held the junctions behind it
+        // (#2373). Omsi.exe has no such rule at all: its cars drive in up to the first path
+        // somebody else has reserved.
+        let front_at_stop = lead_rear - st.min_gap;
+        let rear_at_stop = front_at_stop - st.front - self.cars[i].tail;
+        let covered = jn
             .lanes
             .iter()
             .flat_map(|&(lane, dl)| {
                 self.net.crossings[lane]
                     .iter()
                     .filter(|c| !way.iter().any(|w| w.0 == c.other))
-                    .map(move |c| dl + c.at + c.after)
+                    .map(move |c| (dl + c.at - c.before, dl + c.at + c.after))
             })
+            .filter(|&(from, to)| from < front_at_stop && to > rear_at_stop)
+            .map(|(_, to)| to)
             .fold(f32::MIN, f32::max);
-        let rear_at_stop = lead_rear - st.min_gap - st.front - self.cars[i].tail;
-        if last > f32::MIN && rear_at_stop < last {
+        if covered > f32::MIN {
             if explain {
-                why.push(format!("the queue ahead stands {:.1} m into the junction, no room beyond its last meeting place ({:.1} m)", lead_rear - entry, last - entry));
+                why.push(format!("the queue ahead stands {:.1} m into the junction, behind it the car would stand in a meeting place (to {:.1} m)", lead_rear - entry, covered - entry));
             }
             return (true, self.cars[i].lead_info.map(|x| x.0));
         }
@@ -905,8 +931,7 @@ impl TrafficSim {
         let v = st.speed;
         let a_me = st.accel;
         let mut hard = false;
-        // what is only a matter of the rules (right of way, a full exit) against someone
-        // physically in the way
+        // a matter of the rules (right of way, a full exit), not of someone in the way
         let mut ruled = false;
         let mut soft: Vec<usize> = Vec::new();
         let mut why: Vec<String> = Vec::new();
@@ -962,7 +987,7 @@ impl TrafficSim {
                 // A driver who gives way by a sign and can still stop has not taken the way
                 // from the traffic he gives way to by deciding early: his claim stands
                 // against the others, not against them.
-                let me_yields_by_sign = signed && must_yield && !me_prio && my_room > firm_stop(v);
+                let me_yields_by_sign = signed && must_yield && !me_prio && stops_before(v, my_room);
                 // standing in the junction before a meeting place where it gives way (pulled
                 // in to turn across the oncoming traffic, held up in a queue): it gives way
                 // there as at a line
@@ -1016,12 +1041,20 @@ impl TrafficSim {
                     let queued = o.lead_info.is_some_and(|(lid, gap)| gap < 8.0 && self.car_by_id(lid).is_some_and(|x| x.state.speed < 1.0));
                     let stalled = (o.stopped > 4.0 && o.state.speed < 0.1) || o.crawl >= 8.0 || (o.state.speed < 1.5 && queued);
                     let theirs = dj - c.other_before - o.state.front;
+                    // A car a red light holds short of the meeting place is not coming, claim or
+                    // no claim. A car inside a crossing object (on the stretch before a light
+                    // further in, or between two of its lights) still weighs its junction and
+                    // claims its way through it while it waits at red; counted as coming, that
+                    // claim held the cross traffic at its green until the waiting car had
+                    // stood for a few seconds, and again after every metre it crept on.
+                    let held_short = o.light_hold && o.light_at.is_some_and(|at| at <= dj - c.other_before + 0.5);
                     // (one going into a slow queue that lets it in keeps its claim standing)
                     let claimed = reservations
                         .get(&m)
                         .map(|r| r.contains(&j))
                         .unwrap_or(false)
-                        && (!stalled || o.courtesy);
+                        && (!stalled || o.courtesy)
+                        && !held_short;
                     if reserved && !is_on && !claimed {
                         continue;
                     }
@@ -1090,7 +1123,7 @@ impl TrafficSim {
                     // take the right of way while he can still stop (he judges it alike).
                     // (with a margin: judged from its last step, a car right at the limit has
                     // gone on by now, and both went)
-                    let they_yield_by_sign = signed && !must_yield && self.net.must_yield(m, l) && !o_prio && theirs > firm_stop(o.state.speed) + 0.5 * o.state.speed + 2.0;
+                    let they_yield_by_sign = signed && !must_yield && self.net.must_yield(m, l) && !o_prio && (theirs > firm_stop(o.state.speed) + 0.5 * o.state.speed + 2.0 || (o.state.speed < STANDING && stops_before(o.state.speed, theirs)));
                     if claimed || (is_on && o.state.speed > 0.5 && !waits_short) {
                         if they_yield_by_sign {
                             continue;

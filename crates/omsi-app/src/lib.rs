@@ -104,7 +104,7 @@ mod cli;
 mod diagnostics;
 mod perf_overlay;
 mod perf_report;
-mod profile_keys;
+pub(crate) use omsi_cfg::profile_keys;
 mod frame_stages;
 mod support_bundle;
 mod duty_start;
@@ -724,6 +724,7 @@ fn assemble_app(args: Args, settings: settings::Settings) -> App {
             profile_mark: None,
             frame_times: Vec::new(),
             overlay: Default::default(),
+            texture_cut_at: None,
         },
         sound: SoundState {
             radio,

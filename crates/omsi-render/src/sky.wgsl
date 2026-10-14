@@ -224,11 +224,16 @@ fn vanilla_cloud_reach(d: vec3<f32>) -> vec2<f32> {
     if (vsky.cloud.y <= 0.0 || h <= h0 || h <= 0.0) {
         return vec2<f32>(rim, 0.0);
     }
-    // (below the rim the cone's skirt runs down under the horizon, behind the ground: its
-    // rim stands in for it)
-    var r = rim;
-    if (den > 0.0) {
-        r = min((h - h0) / den, rim);
+    // Below the rim the cone's skirt (helper\clouds.o3d goes on down and in under the
+    // horizon) lies so far away that the fog takes it whole: nothing of the clouds shows
+    // there. Every ray below the rim drawn at the rim instead smeared the texture's one row
+    // into upright streaks above the horizon, wherever the ground did not reach that far.
+    if (den <= 0.0) {
+        return vec2<f32>(rim, 0.0);
+    }
+    let r = (h - h0) / den;
+    if (r > rim) {
+        return vec2<f32>(rim, 0.0);
     }
     return vec2<f32>(r, 1.0);
 }

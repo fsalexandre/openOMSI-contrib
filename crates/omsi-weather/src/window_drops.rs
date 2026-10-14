@@ -278,6 +278,7 @@ impl Drops {
         let edge = b - a;
         let inverse_length = edge.length_squared().max(1e-10).recip();
         let water_radius = if trail { radius * 0.25 } else { radius };
+        let reach = (radius + aa) * (radius + aa);
         for y in lo.y as usize..=hi.y as usize {
             // Clip a diagonal trail per row instead of visiting its mostly empty rectangle.
             let (left, right) = if edge.y.abs() > 1e-8 {
@@ -297,7 +298,11 @@ impl Drops {
                 let pos = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) / scale;
                 let t = ((pos - a).dot(edge) * inverse_length).clamp(0.0, 1.0);
                 let offset = pos - a.lerp(b, t);
-                let distance = offset.length();
+                let distance_squared = offset.length_squared();
+                if distance_squared >= reach {
+                    continue;
+                }
+                let distance = distance_squared.sqrt();
                 let coverage = ((radius + aa - distance) / (2.0 * aa)).clamp(0.0, 1.0)
                     * (radius / aa).min(1.0);
                 // The collected channel is as wide as the head; only the water
@@ -335,6 +340,85 @@ impl Drops {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn paint_every_pixel(drops: &mut Drops) {
+        for i in drops.dirty.drain(..) {
+            drops.image.rgba[i * 4..i * 4 + 4].copy_from_slice(&[128, 128, 0, 0]);
+        }
+        for i in 0..drops.drops.len() {
+            let drop = &drops.drops[i];
+            let (pos, radius, tail) = (drop.pos, drop.radius().min(0.0022), drop.tail);
+            if drop.velocity.length_squared() > 0.0001 {
+                let mut start = pos;
+                for (k, &end) in tail.iter().enumerate() {
+                    if start.distance_squared(end) > 1e-10 {
+                        stamp_every_pixel(drops, start, end, radius * (1.0 - k as f32 / TRAIL as f32), true);
+                    }
+                    start = end;
+                }
+            }
+            stamp_every_pixel(drops, pos, pos, radius, false);
+        }
+    }
+
+    fn stamp_every_pixel(drops: &mut Drops, a: Vec2, b: Vec2, radius: f32, trail: bool) {
+        let scale = Vec2::splat(MAP as f32) / drops.size;
+        let aa = (drops.size / MAP as f32).max_element() * 0.6;
+        let lo = ((a.min(b) - Vec2::splat(radius + aa)) * scale).floor().max(Vec2::ZERO);
+        let hi = ((a.max(b) + Vec2::splat(radius + aa)) * scale).ceil().min(Vec2::splat((MAP - 1) as f32));
+        let edge = b - a;
+        let inverse_length = edge.length_squared().max(1e-10).recip();
+        let water_radius = if trail { radius * 0.25 } else { radius };
+        for y in lo.y as usize..=hi.y as usize {
+            for x in lo.x as usize..=hi.x as usize {
+                let pos = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) / scale;
+                let t = ((pos - a).dot(edge) * inverse_length).clamp(0.0, 1.0);
+                let offset = pos - a.lerp(b, t);
+                let distance = offset.length();
+                let coverage = ((radius + aa - distance) / (2.0 * aa)).clamp(0.0, 1.0) * (radius / aa).min(1.0);
+                let track = if trail { (coverage * 255.0 + 0.5) as u8 } else { 0 };
+                let water_coverage =
+                    ((water_radius + aa - distance) / (2.0 * aa)).clamp(0.0, 1.0) * (water_radius / aa).min(1.0);
+                let alpha = (water_coverage * 255.0 + 0.5) as u8;
+                if alpha == 0 && track == 0 {
+                    continue;
+                }
+                let i = y * MAP + x;
+                let pixel = &mut drops.image.rgba[i * 4..i * 4 + 4];
+                if pixel[2] == 0 && pixel[3] == 0 {
+                    drops.dirty.push(i);
+                }
+                if trail {
+                    pixel[2] = pixel[2].max(track);
+                }
+                if pixel[3] < alpha {
+                    let slope = (offset / water_radius.max(1e-5)).clamp_length_max(1.0) * 0.5;
+                    pixel[0] = (128.5 + slope.x * 127.0) as u8;
+                    pixel[1] = (128.5 + slope.y * 127.0) as u8;
+                    pixel[3] = alpha;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn painted_drops_match_a_drop_painted_over_its_whole_square() {
+        for (size, seed) in [(Vec2::new(2.4, 1.2), 7u32), (Vec2::new(0.6, 0.9), 11), (Vec2::new(1.1, 0.5), 3)] {
+            let mut fast = Drops::new(size, 0.7, seed);
+            let mut whole = Drops::new(size, 0.7, seed);
+            for step in 0..400 {
+                for drops in [&mut fast, &mut whole] {
+                    drops.advance(1.0 / 60.0, 1.0, -Vec2::Y, Vec2::new(0.4, 0.1), 0.2, |_| 1.0);
+                }
+                if step % 2 == 0 {
+                    fast.paint();
+                    paint_every_pixel(&mut whole);
+                    assert!(fast.image.rgba == whole.image.rgba, "seed {seed} step {step}");
+                    assert_eq!(fast.dirty, whole.dirty, "seed {seed} step {step}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_long_update_keeps_all_elapsed_motion_and_empty_glass_needs_no_upload() {

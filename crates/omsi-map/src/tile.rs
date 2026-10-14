@@ -121,6 +121,9 @@ pub struct SplineAttachment {
     pub repeater: Option<(usize, usize)>,
     pub var_parent: Option<i64>,
     pub rules: Vec<MapRule>,
+    /// `[spline_terrain_align]` after the record (the editor's flag on the attachment; it
+    /// says nothing about the spline the objects stand on).
+    pub terrain_align: bool,
 }
 
 /// Chrono patch: `[selobject]` / `[selspline]` name an object or spline **by id** (838 of
@@ -403,14 +406,29 @@ impl Tile {
                         _ => {}
                     }
                 }
-                "spline_terrain_align" => {
-                    if let Some(s) = t.splines.last_mut() {
-                        s.terrain_align_flag = true;
+                // Both belong to the record right before them. The editor writes the plain
+                // flag after a spline attachment too (Omsi.exe 0x794e1a: after anything but a
+                // spline it goes to the last object, and spline attachments are objects
+                // there; the `_2` number only ever to a spline). Given to the last spline
+                // instead, a bridge's deck 30 m up was taken for a road laid on the ground:
+                // the ground was pulled up onto it and a hole with walls cut under it, a tall
+                // wall under the bridge (#2004).
+                "spline_terrain_align" => match last {
+                    Last::Spline => {
+                        if let Some(s) = t.splines.last_mut() {
+                            s.terrain_align_flag = true;
+                        }
                     }
-                }
+                    Last::SplineAttach => {
+                        if let Some(a) = t.spline_attachments.last_mut() {
+                            a.terrain_align = true;
+                        }
+                    }
+                    _ => {}
+                },
                 "spline_terrain_align_2" => {
                     let v = r.f64();
-                    if let Some(s) = t.splines.last_mut() {
+                    if let (Last::Spline, Some(s)) = (&last, t.splines.last_mut()) {
                         s.terrain_align = Some(v);
                     }
                 }
@@ -700,6 +718,7 @@ fn read_spline_attachment(t: &mut Tile, r: &mut omsi_cfg::CfgReader, k: &str, au
         repeater,
         var_parent: None,
         rules: Vec::new(),
+        terrain_align: false,
     });
 }
 

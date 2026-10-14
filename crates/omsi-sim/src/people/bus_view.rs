@@ -55,13 +55,12 @@ impl PeopleSim {
             let (entry_open, exit_open) = Self::doors_open(v, cabin.entries.len(), cabin.exits.len());
             CabinView { entry_open, exit_open, trailers: part_frames(v, cabin), places_off: places_off(v, cabin) }
         });
-        // the destination shown: the depot file's row the IBIS was set to (the game sets
-        // IBIS_TerminusIndex and IBIS_TerminusCode for a pick from the list and a code
-        // typed), else the row the display's scripts chose (target_index_int - the Krüger++
-        // family keeps a row there that is not always the one shown: the people took
-        // "Novi Sad 300" for an IK-201 showing Avijaticarsko naselje, and nothing at all for a
-        // typed code past the list's length - the bus stood "not in service" at a full stop
-        // and nobody got on)
+        // the destination shown: the row the display's scripts chose (target_index_int, as
+        // Omsi.exe's people read it), else the depot file's row the IBIS was set to (the
+        // game sets IBIS_TerminusIndex and IBIS_TerminusCode for a pick from the list and a
+        // code typed) - for a script that keeps no row, or a code typed past the list's
+        // length, where the bus stood "not in service" at a full stop and nobody got on.
+        // See `shown_terminus_row`.
         let terminus = match (v.host.hof.as_ref(), v.var("target_index_int")) {
             (Some(hof), script) => {
                 let code = v.var("IBIS_TerminusCode").filter(|c| c.is_finite() && *c >= 0.0).map(|c| c.round() as i32);
@@ -98,12 +97,19 @@ impl PeopleSim {
     }
 }
 
-/// The depot file's terminus row a bus shows: the row the IBIS was set to (`index`, when it
-/// is a row of the code the IBIS holds), else the first row of that code, else the row the
-/// display's script keeps (`script`).
+/// The depot file's terminus row a bus shows: the row the display's script keeps (`script`,
+/// when it is a row of the list), else the row the IBIS was set to (`index`, when it is a
+/// row of the code the IBIS holds), else the first row of that code.
 pub(crate) fn shown_terminus_row(termini: &[omsi_vehicle::hof::Terminus], code: Option<i32>, index: Option<usize>, script: Option<usize>) -> Option<usize> {
-    index
-        .filter(|&i| termini.get(i).is_some_and(|t| code.is_none_or(|c| t.code == c)))
+    // Omsi.exe ties `target_index_int` to the vehicle's own terminus (0x7f64e8 -> its field
+    // +0x7b4) and its people go by that: the display script's row first, where it is a row
+    // of the depot file. Taking the IBIS's row before it (0.2.47) left the people of every
+    // bus whose IBIS values were stale or at their defaults - the display set another way -
+    // reading another destination than the one shown, and nobody got on (#2601, #2473).
+    // The IBIS's row is for a script that keeps none, or one past the list.
+    script
+        .filter(|&i| i < termini.len())
+        .or_else(|| index.filter(|&i| termini.get(i).is_some_and(|t| code.is_none_or(|c| t.code == c))))
         .or_else(|| code.and_then(|c| termini.iter().position(|t| t.code == c)))
         .or(script)
 }

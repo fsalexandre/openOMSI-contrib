@@ -90,9 +90,13 @@ pub(super) fn traffic(cx: TrafficCx, dt: f32) {
         // (OMSI_SIM_THREAD: the step itself is made on the sim thread while the picture is
         // drawn, see `sim_thread`; here the rest of it, on the traffic the last one left)
         let step_dt = if !*cx.clock.paused && cx.traffic.pipeline.takes_traffic(t) {
+            t.scripts_due = true;
             cx.traffic.pipeline.owe_traffic(dt, cx.player.player.as_ref().map(crate::traffic_link::player_outline));
             0.0
         } else {
+            // (the cars' scripts and animations in the frame's last tick only: their
+            // bodies move on in every step, see `TrafficSim::scripts_due`)
+            t.scripts_due = cx.clock.fixed_tick.view_due();
             dt
         };
         let signals = steps::traffic_tick(t, w, &mut *cx.world.scenery, step_dt, *cx.clock.paused, cx.player.player.as_ref(), &cx.net.remotes, &cx.player.placed, rail);

@@ -1075,25 +1075,24 @@ fn riders_are_drawn_on_the_bus_where_it_is_drawn() {
     assert!((h - (faces + 1.0)).abs() < 1e-9, "and turns with it: {h}");
 }
 
-/// The destination the people take a bus to show: the depot row the IBIS was set to comes
-/// first, then the first row of the code it holds, and the display script's own row only
-/// when the IBIS was never set - the Kruger++ scripts keep a row there that is not the one
-/// shown, and a typed code past the list named nothing at all.
+/// The destination the people take a bus to show: the display script's own row
+/// (`target_index_int`, which Omsi.exe ties to the vehicle's terminus), then the IBIS's row
+/// for a script that keeps none or one past the list, then the first row of the IBIS's code.
 #[test]
-fn the_terminus_shown_is_the_ibis_row_before_the_display_scripts_row() {
+fn the_terminus_shown_is_the_display_scripts_row_before_the_ibis_row() {
     use crate::people::bus_view::shown_terminus_row;
     use omsi_vehicle::hof::Terminus;
     let t = |code: i32, name: &str| Terminus { code, texture_id: name.into(), ..Default::default() };
     let termini = vec![t(300, "Novi Sad 300"), t(14, "Sajlovo"), t(14, "Sajlovo via Centar"), t(18, "Avijaticarsko naselje")];
-    // the IBIS set to row 3 by code 18: that row, whatever the script keeps
-    assert_eq!(shown_terminus_row(&termini, Some(18), Some(3), Some(0)), Some(3));
-    // the index does not belong to the code: the first row of the code
-    assert_eq!(shown_terminus_row(&termini, Some(14), Some(3), Some(0)), Some(1));
-    // a code the depot file has not got, no index: the script's row
-    assert_eq!(shown_terminus_row(&termini, Some(99), None, Some(2)), Some(2));
-    // an index past the list, no code: the script's row
-    assert_eq!(shown_terminus_row(&termini, None, Some(9), Some(1)), Some(1));
-    // the IBIS never set and no script row: nothing
+    // the script keeps row 2: that row, whatever stale values the IBIS holds
+    assert_eq!(shown_terminus_row(&termini, Some(18), Some(3), Some(2)), Some(2));
+    // no script row: the IBIS's row of its code
+    assert_eq!(shown_terminus_row(&termini, Some(18), Some(3), None), Some(3));
+    // no script row, the index not of the code: the first row of the code
+    assert_eq!(shown_terminus_row(&termini, Some(14), Some(3), None), Some(1));
+    // a script row past the list: the IBIS's row
+    assert_eq!(shown_terminus_row(&termini, Some(14), Some(2), Some(9)), Some(2));
+    // nothing set at all: nothing
     assert_eq!(shown_terminus_row(&termini, None, None, None), None);
 }
 

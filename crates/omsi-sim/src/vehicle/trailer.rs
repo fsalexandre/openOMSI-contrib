@@ -216,14 +216,20 @@ impl TrailerPart {
         let axle_long = if let Some(r) = turning_line {
             r
         } else if let Some(b) = ty.def.boogies {
-            // Rail vehicle with [boogies]: turning pivot is at the rear bogie (-b.abs() * 0.5)
-            // clamped so it doesn't fall behind the rear coupling
-            let rear_bogie = -b.abs() * 0.5;
-            rear_bogie.max(coupling_back.y)
+            // a rail car's rear bogie: `[boogies]` is how far each bogie stands from the
+            // origin (see `rail_ends`), at the model's back - its front where it is turned
+            // round. (Half as far out, and kept from going past the coupling of the car in
+            // front instead of its own, the bogie of a car turned round lay ahead of its
+            // front coupling.)
+            if body_reversed(&ty.def, reversed) {
+                b.abs()
+            } else {
+                -b.abs()
+            }
         } else if ty.def.is_rail() {
-            // Rail vehicle without [boogies] (e.g. hanging bridge section):
-            // pivot is at rear coupling
-            coupling_back.y
+            // Rail vehicle without [boogies] (e.g. hanging bridge section): pivot is at
+            // its own rear coupling (`coupling_back` is the one of the part in front)
+            declared_coupling(&ty.def, reversed).y
         } else if body_reversed(&ty.def, reversed) {
             let a = ty.def.axles.iter().map(|a| a.long).fold(f32::MIN, f32::max);
             if a == f32::MIN {
@@ -242,7 +248,7 @@ impl TrailerPart {
         let length = if ty.def.is_rail() {
             let len = (coupling_front.y - axle_long).abs();
             if len < 0.1 {
-                (coupling_front.y - coupling_back.y).abs().max(0.5)
+                (coupling_front.y - declared_coupling(&ty.def, reversed).y).abs().max(0.5)
             } else {
                 len
             }
@@ -469,6 +475,92 @@ impl TrailerPart {
         self.track = Some(p);
     }
 
+    /// Its springs: an AI copy sits `[ai_deltaheight]` low like its tractor; a driven one
+    /// as far down as the scripts' `Axle_Springfactor` lets the load press it. Writes each
+    /// axle's `Axle_Suspension_*` and returns how far the part's origin stands above the
+    /// ground under its axles (m).
+    fn rest_springs(&self, main: &mut VehicleInstance) -> f64 {
+        let ai = main.ev(Ev::Ai).map(|v| v > 0.5).unwrap_or(false);
+        let shows = !self.ty.suspension_axles.is_empty();
+        let mut sag = Vec::with_capacity(self.rest.len());
+        for (a, (offset, load, k)) in self.rest.iter().enumerate() {
+            let axle = self.first_axle + a;
+            let compression = if ai {
+                if shows {
+                    -self.ty.def.ai_delta_height
+                } else {
+                    0.0
+                }
+            } else if self.ty.suspension_axles.contains(&axle) {
+                let factor = self.axle_ids.spring_factor[a]
+                    .map(|i| main.state.vars[i as usize])
+                    .unwrap_or(1.0)
+                    .max(0.05);
+                (load / (k * factor)).min(crate::rigid::BUMP)
+            } else {
+                0.0
+            };
+            for id in self.axle_ids.suspension[a].into_iter().flatten() {
+                main.state.vars[id as usize] = -compression;
+            }
+            sag.push(offset - compression);
+        }
+        sag.iter().sum::<f32>() as f64 / sag.len().max(1) as f64
+    }
+
+    /// Where the part runs on the track, in the frame of its travel (m forward of its
+    /// origin): its two bogies (`[boogies]` is how far each stands from the origin - the
+    /// A3's axles at ±2.835 and ±4.735 m are its 3.785), else its first and last axle, else
+    /// its front coupling and the point it was towed by behind it.
+    pub(super) fn rail_ends(&self) -> (f32, f32) {
+        if let Some(b) = self.ty.def.boogies.map(f32::abs).filter(|b| *b > 0.05) {
+            return (b, -b);
+        }
+        let turn = if body_reversed(&self.ty.def, self.reversed) { -1.0 } else { 1.0 };
+        let longs = self.ty.def.axles.iter().map(|a| a.long * turn);
+        let (lo, hi) = longs.fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+        if hi - lo > 0.5 {
+            return (hi, lo);
+        }
+        let front = self.coupling_front.y * turn;
+        (front, front - self.length.max(0.5))
+    }
+
+    /// Stand the part on the track (`VehicleInstance::retrail`): `front` and `back` are the
+    /// track's points under its running ends (`rail_ends`, `y_front` and `y_back` metres
+    /// forward of its origin). It takes the track's heading and grade between them, at
+    /// the track's height, as the vehicle it is coupled to does (`AiBody::ride`).
+    pub(super) fn place_on_rails(
+        &mut self,
+        main: &mut VehicleInstance,
+        dt: f32,
+        lead: Option<(DVec3, Mat4, f64)>,
+        (front, y_front): (DVec3, f32),
+        (back, y_back): (DVec3, f32),
+    ) {
+        self.axle_ids.refresh(main, self.first_axle, self.axle_count.max(self.rest.len()));
+        let d = front - back;
+        let run = d.truncate().length();
+        if run > 1e-3 {
+            self.heading = d.x.atan2(d.y).to_degrees().rem_euclid(360.0);
+            self.pitch = ((d.z / run).atan().to_degrees() as f32).clamp(-30.0, 30.0);
+        }
+        let span = (y_front - y_back).max(0.1) as f64;
+        self.position = back + d * ((0.0 - y_back) as f64 / span);
+        self.bank = main.bank;
+        // (its wheels roll as far as its rear end moved)
+        if let Some(p) = self.pivot {
+            let ds = (back - p).truncate().length() as f32;
+            self.odometer += ds * (main.physics.velocity_kmh().signum().max(0.0) * 2.0 - 1.0).max(-1.0);
+        }
+        self.pivot = Some(back);
+        self.track = Some(back);
+        self.axle_z = Some(back.z);
+        self.axle_vz = 0.0;
+        self.ground_lift = self.rest_springs(main) as f32;
+        self.update_visuals_only(main, dt, lead);
+    }
+
     pub(super) fn update(&mut self, main: &mut VehicleInstance, dt: f32, lead: Option<(DVec3, Mat4, f64)>) {
         self.axle_ids.refresh(main, self.first_axle, self.axle_count.max(self.rest.len()));
         if self.remote {
@@ -521,34 +613,9 @@ impl TrailerPart {
         let ds = (new_pivot - pivot).truncate().length() as f32;
         self.odometer += ds * (main.physics.velocity_kmh().signum().max(0.0) * 2.0 - 1.0).max(-1.0);
         self.pivot = Some(new_pivot);
-        // Its springs: an AI copy sits `[ai_deltaheight]` low like its tractor; a driven one
-        // as far down as the scripts' `Axle_Springfactor` lets the load press it.
         let ai = main.ev(Ev::Ai).map(|v| v > 0.5).unwrap_or(false);
         let shows = !self.ty.suspension_axles.is_empty();
-        let mut sag = Vec::with_capacity(self.rest.len());
-        for (a, (offset, load, k)) in self.rest.iter().enumerate() {
-            let axle = self.first_axle + a;
-            let compression = if ai {
-                if shows {
-                    -self.ty.def.ai_delta_height
-                } else {
-                    0.0
-                }
-            } else if self.ty.suspension_axles.contains(&axle) {
-                let factor = self.axle_ids.spring_factor[a]
-                    .map(|i| main.state.vars[i as usize])
-                    .unwrap_or(1.0)
-                    .max(0.05);
-                (load / (k * factor)).min(crate::rigid::BUMP)
-            } else {
-                0.0
-            };
-            for id in self.axle_ids.suspension[a].into_iter().flatten() {
-                main.state.vars[id as usize] = -compression;
-            }
-            sag.push(offset - compression);
-        }
-        let lift = sag.iter().sum::<f32>() as f64 / sag.len().max(1) as f64;
+        let lift = self.rest_springs(main);
         self.ground_lift = lift as f32;
         // On rails: the track's height where it was put on it (self.track is set by
         // retrail; we don't reject it with a distance threshold on curves).
@@ -657,9 +724,8 @@ impl TrailerPart {
         }
         if omsi_cfg::flags::OMSI_DEBUG_TRAILER.is_set() {
             log::info!(
-                "trailer: rest {:?} sag {:?} lift {lift:.3} ground {ground_z:?} z {:.3}",
+                "trailer: rest {:?} lift {lift:.3} ground {ground_z:?} z {:.3}",
                 self.rest,
-                sag,
                 self.position.z
             );
             for (i, m) in self.ty.meshes.iter().enumerate() {

@@ -1099,7 +1099,7 @@ fn display_behind_a_pane_keeps_its_pixel_contrast() {
 }
 
 #[test]
-fn a_texture_the_card_cannot_make_is_drawn_plain_and_asks_for_fewer_textures() {
+fn a_texture_the_card_refuses_is_drawn_plain_without_cutting_the_texture_budget() {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     descriptor.backends = wgpu::Backends::NOOP;
     descriptor.backend_options.noop = wgpu::NoopBackendOptions { enable: true };
@@ -1109,7 +1109,6 @@ fn a_texture_the_card_cannot_make_is_drawn_plain_and_asks_for_fewer_textures() {
         RenderOptions { msaa: 1, ssao: false, render_scale: 1.0, ..Default::default() },
     )).expect("noop renderer");
     let _ = renderer.take_out_of_memory();
-    // (one the device refuses stands for one it has no memory for)
     let too_big = renderer.device.limits().max_texture_dimension_2d + 1;
     let desc = wgpu::TextureDescriptor {
         label: None,
@@ -1131,6 +1130,5 @@ fn a_texture_the_card_cannot_make_is_drawn_plain_and_asks_for_fewer_textures() {
     let id = scene.textures.len() - 1;
     let _ = renderer.add_material(&mut scene, Some(id), AlphaMode::Opaque, [1.0; 4], true);
     assert!(pollster::block_on(scope.pop()).is_none(), "nothing invalid reached the device");
-    assert!(renderer.take_out_of_memory(), "the game is told to keep fewer textures");
-    assert!(!renderer.take_out_of_memory());
+    assert!(!renderer.take_out_of_memory(), "a refused texture is no shortage of graphics memory");
 }

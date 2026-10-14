@@ -7,7 +7,7 @@
 /// A profile key (see the module's notes). The variants are in the order of their names (a
 /// test pins it): the profile lists its keys in that order, as the map it replaced did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum ProfKey {
+pub enum ProfKey {
     Acquire,
     Clock,
     Drive,
@@ -71,7 +71,7 @@ pub(crate) enum ProfKey {
 
 impl ProfKey {
     /// Every key, in the order of their names.
-    pub(crate) const ALL: [ProfKey; 59] = {
+    pub const ALL: [ProfKey; 59] = {
         use ProfKey::*;
         [
             Acquire, Clock, Drive, Duty, Gpu, GroundGap, Hud, HudNavigator, Humans, Integrations, Lan, Lighting,
@@ -85,7 +85,7 @@ impl ProfKey {
     };
 
     /// The key as the logs print it; a dot marks a stage's own part (`traffic.tick` of `traffic`).
-    pub(crate) const fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         use ProfKey::*;
         match self {
             Acquire => "acquire",
@@ -151,8 +151,8 @@ impl ProfKey {
     }
 
     /// The key of a name (the tests' profiles, written by name).
-    #[cfg(test)]
-    pub(crate) fn of(name: &str) -> ProfKey {
+    #[doc(hidden)]
+    pub fn of(name: &str) -> ProfKey {
         *Self::ALL.iter().find(|k| k.name() == name).unwrap_or_else(|| panic!("no profile key {name:?}"))
     }
 }
@@ -169,7 +169,7 @@ const N: usize = ProfKey::ALL.len();
 /// The seconds each key has taken so far. A key is listed once something was added to it
 /// (even nothing: a stage that took no time is still listed, as the map's entries were).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ProfileTimes {
+pub struct ProfileTimes {
     secs: [f64; N],
     seen: [bool; N],
 }
@@ -182,24 +182,24 @@ impl Default for ProfileTimes {
 
 impl ProfileTimes {
     #[inline]
-    pub(crate) fn add(&mut self, key: ProfKey, secs: f64) {
+    pub fn add(&mut self, key: ProfKey, secs: f64) {
         self.secs[key as usize] += secs;
         self.seen[key as usize] = true;
     }
 
     /// The key's seconds (0 when nothing was added).
-    pub(crate) fn get(&self, key: ProfKey) -> f64 {
+    pub fn get(&self, key: ProfKey) -> f64 {
         self.secs[key as usize]
     }
 
     /// The keys added to, in the order of their names, with their seconds.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (ProfKey, f64)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (ProfKey, f64)> + '_ {
         ProfKey::ALL.iter().filter(|k| self.seen[**k as usize]).map(|k| (*k, self.secs[*k as usize]))
     }
 
     /// A profile of named keys (the tests').
-    #[cfg(test)]
-    pub(crate) fn of(entries: &[(&str, f64)]) -> Self {
+    #[doc(hidden)]
+    pub fn of(entries: &[(&str, f64)]) -> Self {
         let mut p = Self::default();
         for (k, v) in entries {
             p.add(ProfKey::of(k), *v);

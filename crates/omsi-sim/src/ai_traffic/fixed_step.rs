@@ -53,6 +53,7 @@ impl TrafficSim {
     /// traffic is the host's and only follows it, frame by frame.
     pub fn advance(&mut self, frame_dt: f32, player: Option<PlayerBox>) -> u32 {
         if self.mirror {
+            self.step_scripts = true;
             self.tick(frame_dt, player);
             self.frame_split = self.tick_split;
             self.frame_alpha = 1.0;
@@ -64,6 +65,7 @@ impl TrafficSim {
             if k + 2 >= steps {
                 self.remember_poses();
             }
+            self.step_scripts = self.scripts_due && k + 1 == steps;
             self.tick(SIM_DT, player);
             for (a, b) in split.iter_mut().zip(self.tick_split) {
                 *a += b;

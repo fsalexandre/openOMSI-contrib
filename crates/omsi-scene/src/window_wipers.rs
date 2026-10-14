@@ -6,6 +6,7 @@ use glam::{Vec2, Vec3};
 use omsi_geometry::MeshData;
 use omsi_render::{MaterialId, Renderer, Scene, TextureId};
 use omsi_sim::VehicleInstance;
+use rayon::prelude::*;
 
 // (the shader reads the mask at this size: `WIPE_MASK_SIZE` in shader.wgsl)
 const SIZE: usize = 128;
@@ -50,6 +51,7 @@ struct Film {
     drops: Drops,
     drops_texture: TextureId,
     paint_time: f32,
+    paint_due: bool,
     runoff_time: f32,
     points: Vec<Vec3>,
     // Negative is a recent wipe's residual film; 0..1 droplets; 1..2 the pushed ridge.
@@ -226,6 +228,7 @@ impl WindowWipers {
                         drops,
                         drops_texture,
                         paint_time: 1.0,
+                        paint_due: false,
                         runoff_time: 0.0,
                         points,
                         wet: vec![wetness; SIZE * SIZE],
@@ -428,9 +431,7 @@ impl WindowWipers {
                 } else {
                     film.drops.drops.clear();
                 }
-                if film.drops.paint() {
-                    renderer.update_texture(scene, film.drops_texture, &film.drops.image);
-                }
+                film.paint_due = true;
             }
             let mut changed = false;
             if film.local || previous_wetness != film.unwiped {
@@ -470,10 +471,28 @@ impl WindowWipers {
                 &vehicle.mesh_props[film.mesh].slot_uv,
             );
         }
+        let paint = |films: &mut Vec<Film>| -> Vec<bool> {
+            films.par_iter_mut().map(|film| std::mem::take(&mut film.paint_due) && film.drops.paint()).collect()
+        };
+        let painted = match drops_pool() {
+            Some(pool) => pool.install(|| paint(&mut self.films)),
+            None => paint(&mut self.films),
+        };
+        for (film, painted) in self.films.iter().zip(painted) {
+            if painted {
+                renderer.update_texture(scene, film.drops_texture, &film.drops.image);
+            }
+        }
         for blade in &mut self.blades {
             blade.previous = blade.current;
         }
     }
+}
+
+fn drops_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(2).thread_name(|_| "window drops".into()).build().ok())
+        .as_ref()
 }
 
 // A signed inverse width selects X/Z for the front or Y/Z for a side pane.

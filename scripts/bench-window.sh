@@ -17,8 +17,9 @@
 # BENCH_FPS=<n>: the frame rate limited to n (30 or 60: what most players see; the fixed
 # simulation step runs more ticks a frame the lower it is, which an unlimited run on a fast
 # machine never shows). BENCH_TRAFFIC=<n>: the traffic's density (30 by default).
+# BENCH_TIME=<HH:MM>: the time of day (08:00 by default).
 #
-# Every run has a fresh, empty $HOME (default settings) and OMSI_SEED fixed, and no frame
+# Every run has a fresh, empty $HOME (default settings, sound off) and OMSI_SEED fixed, and no frame
 # rate limit unless BENCH_FPS asks for one. Compare runs of one machine only, and several
 # of each: the frame times move with whatever else the machine does; the stages' CPU times
 # much less.
@@ -38,7 +39,7 @@ home="$(mktemp -d "${TMPDIR:-/tmp}/bench-home.XXXXXX")"
 trap 'rm -rf "$home"' EXIT
 mkdir -p "$home/.openomsi"
 # (the swaying trees move with the wall clock)
-printf 'windy_trees=0\n' >"$home/.openomsi/settings.cfg"
+printf 'windy_trees=0\nvolume=0\nvol_ai=0\nvol_ambient=0\nambient=0\n' >"$home/.openomsi/settings.cfg"
 drive="t=44 key .; t=45 keydown W"
 [ "${BENCH_STILL:-0}" = 1 ] && drive="t=99999 key ."
 env HOME="$home" OMSI_SEED=1 OMSI_HIDDEN_WINDOW=1 OMSI_NO_UPDATE=1 OMSI_MAX_FPS="${BENCH_FPS:-1000}" \
@@ -46,6 +47,6 @@ env HOME="$home" OMSI_SEED=1 OMSI_HIDDEN_WINDOW=1 OMSI_NO_UPDATE=1 OMSI_MAX_FPS=
   OMSI_INPUT="$drive" \
   "$bin" --root "$root" --no-menu --map maps/Berlin-Spandau/global.cfg \
   --bus Vehicles/MAN_NL_NG/MAN_EN92_main.bus --autostart --view driver \
-  --traffic "${BENCH_TRAFFIC:-30}" --passengers --schedule --time 08:00 --size 1280x720 \
+  --traffic "${BENCH_TRAFFIC:-30}" --passengers --schedule --time "${BENCH_TIME:-08:00}" --size 1280x720 \
   --exit-after "$secs" ${extra[@]+"${extra[@]}"} ${@+"$@"} >"$out.log" 2>&1
 grep -E "profile: (since|window)" "$out.log" | sed 's/^.*profile: /profile: /'

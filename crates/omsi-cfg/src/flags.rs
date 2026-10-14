@@ -378,6 +378,7 @@ flags! {
     OMSI_NO_SPRAY: Bool, Switch, Use, "off", "No tyre spray.";
     OMSI_NO_SURF: Bool, Switch, Once, "off", "Every road as smooth as before (no surface texture) (A/B).";
     OMSI_NO_TEXCOMPRESS: Bool, Switch, Use, "off", "No runtime texture compression.";
+    OMSI_NO_TEXTURE_CACHE: Bool, Switch, Once, "off", "Compress every texture at each start (no ~/.openomsi/cache/textures).";
     OMSI_NO_TUNNEL: Bool, Switch, Use, "off", "LAN: no tunnel.";
     OMSI_NO_UPDATE: Bool, Switch, Use, "off", "No update check.";
     OMSI_NO_VAR_SYNC: Bool, Switch, Use, "off", "LAN: no variable sync.";

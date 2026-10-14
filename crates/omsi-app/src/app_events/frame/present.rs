@@ -731,19 +731,23 @@ impl App {
     }
 }
 
-/// Waits for the next frame's deadline (see [`next_deadline`]). The last moment is spun,
-/// not slept: a sleep may wake a millisecond late.
+/// Waits for the next frame's deadline (see [`next_deadline`]).
 fn pace_until(frame_start: Instant, period: std::time::Duration) {
     use std::time::Duration;
     static NEXT: parking_lot::Mutex<Option<(Instant, Duration)>> = parking_lot::Mutex::new(None);
+    static LATE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000_000);
     let mut next = NEXT.lock();
     let deadline = next_deadline(*next, frame_start, Instant::now(), period);
     *next = Some((deadline, period));
     drop(next);
-    const SPIN: Duration = Duration::from_millis(1);
+    let late = LATE_NS.load(std::sync::atomic::Ordering::Relaxed);
+    let margin = Duration::from_nanos(late.min(1_000_000));
     if let Some(rest) = deadline.checked_duration_since(Instant::now()) {
-        if rest > SPIN {
-            std::thread::sleep(rest - SPIN);
+        if rest > margin {
+            let wake = Instant::now() + (rest - margin);
+            std::thread::sleep(rest - margin);
+            let seen = Instant::now().saturating_duration_since(wake).as_nanos() as u64;
+            LATE_NS.store((seen * 3 / 2).max(late - late / 8), std::sync::atomic::Ordering::Relaxed);
         }
     }
     while Instant::now() < deadline {

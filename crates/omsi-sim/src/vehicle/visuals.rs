@@ -104,7 +104,9 @@ impl VehicleInstance {
     pub(super) fn update_visuals(&mut self, dt: f32) {
         // coupled vehicles come first, because they write the joint's angles this vehicle's
         // plates and bellows turn with (a frame late, the joint lagged behind the rear section)
-        self.update_trailers(dt);
+        if !std::mem::take(&mut self.trailers_stepped) {
+            self.update_trailers(dt);
+        }
         for (i, a) in self.animators.iter_mut().enumerate() {
             self.mesh_transforms[i] = a.update(dt, &self.state.vars);
         }

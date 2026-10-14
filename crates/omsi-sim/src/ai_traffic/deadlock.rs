@@ -12,6 +12,10 @@
 //!   where everybody has somebody on the right): after `YIELD_CYCLE_WAIT` the one that has
 //!   waited longest is let go by the rules for `YIELD_PASS` (it still waits for bodies,
 //!   people, lights and a full exit), as drivers sort it out by hand signals;
+//! - they all stand, nobody's body is in anybody's way, and the right of way or a claim
+//!   holds some of them while the others follow them or wait for room on their exit: after
+//!   `YIELD_CYCLE_WAIT` the claims are let go but the longest waiter's, and he is let go
+//!   by the rules (`Circle::Tangled`);
 //! - otherwise the road is physically full: nobody is forced through anybody.
 //!
 //! Nothing here moves a car through a body or a red light; the timer escapes it replaces
@@ -52,6 +56,9 @@ pub enum Circle {
     Courtesy,
     StaleClaims,
     Yielding,
+    /// The right of way or claims hold some of them, the others follow them or wait for
+    /// room on an exit; no body is in anybody's way.
+    Tangled,
     Full,
 }
 
@@ -124,6 +131,14 @@ pub fn classify(red: bool, all_standing: bool, holds: &[Hold]) -> Circle {
         Circle::StaleClaims
     } else if all_standing && !holds.is_empty() && holds.iter().all(|h| *h == Hold::Rule) {
         Circle::Yielding
+    } else if all_standing && !holds.contains(&Hold::Body) && holds.iter().any(|h| matches!(h, Hold::Rule | Hold::Claim)) {
+        // Since 0.2.28 such a circle counted as a full road and was never sorted out (the
+        // timer escape before it let one of any circle go): a side road's car giving way to
+        // a main road's car that queues behind cars waiting, in the end, for the side road's
+        // queue, or a claim held against a car that follows another one held by that claim,
+        // stood for good - at a big crossing object every approach, at any light (#2373,
+        // #2562), and round a roundabout (#2257). What holds them is only the rules.
+        Circle::Tangled
     } else {
         Circle::Full
     }
@@ -207,6 +222,33 @@ impl TrafficSim {
                         }
                     }
                 }
+                Circle::Tangled => {
+                    if part.iter().any(|&k| self.cars[k].yield_pass > self.time) {
+                        continue; // one of them is going already
+                    }
+                    // (the followers' wait at a junction is not counted: how long they stood)
+                    if part.iter().any(|&k| self.cars[k].stopped < YIELD_CYCLE_WAIT) {
+                        continue;
+                    }
+                    // of those the rules or a claim hold, the one that has waited longest (not
+                    // one a full exit holds as well: let go by the rules, it would still stand)
+                    let held: Vec<(usize, f32, u64)> = part
+                        .iter()
+                        .filter(|&&k| !self.cars[k].exit_wait && kinds[k].iter().any(|e| matches!(e.1, Hold::Rule | Hold::Claim) && part.binary_search(&e.0).is_ok()))
+                        .map(|&k| (k, self.cars[k].state.yield_time, self.cars[k].id))
+                        .collect();
+                    let Some(go) = longest_waiter(&held) else { continue };
+                    for &k in &part {
+                        if k != go {
+                            self.cars[k].reserved.clear();
+                            self.cars[k].exit_claim = None;
+                        }
+                    }
+                    self.cars[go].yield_pass = self.time + YIELD_PASS;
+                    if debug {
+                        log::info!("t={:.1}: cars {:?} hold each other by the rules and their claims: car {} goes", self.time, members.iter().map(|m| m.2).collect::<Vec<_>>(), self.cars[go].id);
+                    }
+                }
                 Circle::Courtesy => {
                     // Letting somebody in is a favour, never owed: a driver who lets in a
                     // car that waits, round the circle, for him takes his right of way back
@@ -256,7 +298,12 @@ mod tests {
         assert_eq!(classify(false, false, &[Rule, Rule]), Circle::Full);
         // a body in the way is physically full, never forced
         assert_eq!(classify(false, true, &[Rule, Body]), Circle::Full);
-        assert_eq!(classify(false, true, &[Claim, Lead]), Circle::Full);
+        // a claim or the right of way held against cars that follow, no body in the way
+        assert_eq!(classify(false, true, &[Claim, Lead]), Circle::Tangled);
+        assert_eq!(classify(false, true, &[Rule, Lead, Exit]), Circle::Tangled);
+        assert_eq!(classify(false, false, &[Rule, Lead]), Circle::Full);
+        // nothing but following and full exits: the road is full
+        assert_eq!(classify(false, true, &[Lead, Exit, Lead]), Circle::Full);
         // a queue waiting behind a driver who lets in a car that waits for the queue
         assert_eq!(classify(false, true, &[Lead, Lead, Courtesy, Exit]), Circle::Courtesy);
         assert_eq!(classify(true, true, &[Lead, Courtesy, Exit]), Circle::Legal);

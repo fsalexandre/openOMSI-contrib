@@ -92,4 +92,14 @@ mod tests {
         assert!(!game.mouse_smooth);
         assert!(crate::settings::Settings::from_text("").mouse_smooth);
     }
+
+    #[test]
+    fn a_phone_launcher_starts_from_the_games_phone_defaults() {
+        let launcher = omsi_launcher_lib::settings_from_text_on(None, true);
+        let game = crate::settings::Settings::from_text(&omsi_launcher_lib::settings_to_text(&launcher, None));
+        let d = crate::settings::Settings::phone();
+        assert_eq!((game.msaa, game.anisotropy, game.ssao, game.shadow_size, game.mirror_size, game.max_fps), (d.msaa, d.anisotropy, d.ssao, d.shadow_size, d.mirror_size, d.max_fps));
+        assert_eq!((game.max_obj_dist, game.pax_density, &game.navigator_corner), (d.max_obj_dist, d.pax_density, &d.navigator_corner));
+        assert_eq!((game.shadows, game.detail_textures, game.reflections, &game.graphics), (d.shadows, d.detail_textures, d.reflections, &d.graphics));
+    }
 }

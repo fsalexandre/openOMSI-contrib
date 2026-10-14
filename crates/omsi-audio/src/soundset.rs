@@ -836,21 +836,23 @@ impl Ctx {
         // [werden] nur einmalig beim Abspielstart zugewiesen"): the door hits of the SD200/
         // SD202 and of Kajosoft's buses read `doorSpeed_<n>`, which is 0 once the leaf has
         // stopped, and were cut to a short click a frame after they started (#611, #1268).
-        // Where it is and how far away still change while it plays.
-        let curves = match s.fired_curves.filter(|_| triggered) {
-            Some(c) => c,
-            None => {
-                let mut c = 1.0;
-                for (k, (vc, &kind)) in def.vol_curves.iter().zip(&s.curve_inputs).enumerate() {
-                    if let Some(x) = SoundSet::curve_input_as(kind, vc, s.ix.curves.get(k).copied().unwrap_or(0), var, active, facing) {
-                        c *= curve(&vc.points, x);
-                    }
-                }
-                if triggered {
-                    s.fired_curves = Some(c);
-                }
-                c
+        // Where it is and how far away still change while it plays. What it keeps is the
+        // loudest its curves have given since it fired: a sound fired while its variable is
+        // still at rest and rising right after (the Thüringer Wald buses' steering pump,
+        // whose start reads the steering's speed) was held at the silence of the moment it
+        // fired, from 0.2.46 on, and never heard (#2552).
+        let mut now = 1.0;
+        for (k, (vc, &kind)) in def.vol_curves.iter().zip(&s.curve_inputs).enumerate() {
+            if let Some(x) = SoundSet::curve_input_as(kind, vc, s.ix.curves.get(k).copied().unwrap_or(0), var, active, facing) {
+                now *= curve(&vc.points, x);
             }
+        }
+        let curves = if triggered {
+            let c = s.fired_curves.map_or(now, |kept| kept.max(now));
+            s.fired_curves = Some(c);
+            c
+        } else {
+            now
         };
         vol *= curves;
         // `[3d]`: full up to the range, then range / distance

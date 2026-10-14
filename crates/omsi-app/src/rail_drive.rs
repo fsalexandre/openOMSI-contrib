@@ -147,7 +147,10 @@ impl RailDrive {
         if !self.step(net, Some((world, &mut *scenery)), ds, blinker) {
             p.vehicle.set_speed(0.0);
         }
-        let bogie_dist = p.vehicle.ty.def.boogies.map(|b| b.abs() * 0.5).filter(|&b| b > 0.25)
+        // (`[boogies]` is how far each bogie stands from the origin, not the span between
+        // them: the A3's axles at ±2.835 and ±4.735 m are its 3.785. Halved, the bogies ran
+        // under the middle of the car and its ends swung off the track in every bend.)
+        let bogie_dist = p.vehicle.ty.def.boogies.map(|b| b.abs()).filter(|&b| b > 0.5)
             .or_else(|| {
                 let axles = &p.vehicle.ty.def.axles;
                 if axles.len() >= 2 {
@@ -263,13 +266,14 @@ impl RailDrive {
             let trail = &self.trail;
             let u = self.u;
             let r_probe = self.clone();
-            v.retrail(dt, &|d| {
-                point_at(trail, u - d).or_else(|| {
-                    let mut probe = r_probe.clone();
-                    probe.step(net, None, -d as f32, 0);
-                    Some(net.lanes[probe.lane].at(probe.s).0)
-                })
-            });
+            let probe = |d: f64| {
+                let mut probe = r_probe.clone();
+                probe.step(net, None, -d as f32, 0);
+                Some(net.lanes[probe.lane].at(probe.s).0)
+            };
+            // (a part may run ahead of the vehicle's origin - a bogie frame under its front
+            // end - where the trail, which holds on to its newest point, has nothing yet)
+            v.retrail(dt, &|d| if d < 0.0 { probe(d) } else { point_at(trail, u - d).or_else(|| probe(d)) });
         }
     }
 
