@@ -349,11 +349,16 @@ fn find_texture_uncached(name: &str, dirs: &[&Path]) -> Option<PathBuf> {
 fn find_texture_in_season(name: &str, dirs: &[&Path], season: Option<&str>) -> Option<PathBuf> {
     // a file named in full (a paint scheme's picture, resolved in its scheme's folder)
     let full = Path::new(name.trim());
-    if full.is_absolute() {
-        if let (Some(parent), Some(file)) = (full.parent(), full.file_name().and_then(|f| f.to_str())) {
-            if let Some(found) = find_texture_in_dir(parent, file) {
-                return Some(found);
+    let remote = names_another_machine(name);
+    if full.is_absolute() || remote {
+        if under_content_root(full) {
+            if let (Some(parent), Some(file)) = (full.parent(), full.file_name().and_then(|f| f.to_str())) {
+                if let Some(found) = find_texture_in_dir(parent, file) {
+                    return Some(found);
+                }
             }
+        } else if remote {
+            return None;
         }
     }
     let name = name.trim().replace('\\', "/");
@@ -382,6 +387,9 @@ fn find_texture_in_season(name: &str, dirs: &[&Path], season: Option<&str>) -> O
     // Keep the pack's directory priority, then prefer its seasonal variant.
     for dir in &dirs {
         for cand_name in &names {
+            if !stays_inside(dir, cand_name) {
+                continue;
+            }
             if let Some(found) = find_texture_in_dir(dir, cand_name) {
                 return Some(found);
             }
@@ -396,6 +404,9 @@ fn find_texture_in_season(name: &str, dirs: &[&Path], season: Option<&str>) -> O
         if let Some(i) = parts.iter().position(|p| omsi_cfg::CONTENT_FOLDERS.iter().any(|f| f.eq_ignore_ascii_case(p))) {
             let rel = parts[i..].join("/");
             for root in omsi_cfg::content_roots() {
+                if !stays_inside(&root, &rel) {
+                    continue;
+                }
                 if let Some(found) = find_texture_in_dir(&root, &rel) {
                     return Some(found);
                 }
@@ -408,6 +419,49 @@ fn find_texture_in_season(name: &str, dirs: &[&Path], season: Option<&str>) -> O
         }
     }
     None
+}
+
+fn names_another_machine(name: &str) -> bool {
+    let b = name.trim().as_bytes();
+    if b.len() >= 2 && matches!(b[0], b'\\' | b'/') && matches!(b[1], b'\\' | b'/') {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        if let Some(Component::Prefix(p)) = Path::new(name.trim()).components().next() {
+            return !matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_));
+        }
+    }
+    false
+}
+
+fn under_content_root(path: &Path) -> bool {
+    // (or in a sealed mount: another player's bus fetched by its content, whose files the
+    // game put there itself, each checked - its paint's pictures are named in full there,
+    // and taken from this machine's own copy instead they were another bus's)
+    !path.components().any(|c| matches!(c, std::path::Component::ParentDir))
+        && (omsi_cfg::content_roots().iter().any(|r| path.starts_with(r)) || omsi_cfg::vfs::is_sealed(path))
+}
+
+fn stays_inside(dir: &Path, name: &str) -> bool {
+    if name.contains(':') {
+        return false;
+    }
+    let roots = omsi_cfg::content_roots();
+    let mut depth = dir.components().count();
+    let floor = roots.iter().filter(|r| dir.starts_with(r)).map(|r| r.components().count()).max().unwrap_or(if roots.is_empty() { 1 } else { depth });
+    for c in omsi_cfg::windows_components(name) {
+        if c == ".." {
+            if depth <= floor {
+                return false;
+            }
+            depth -= 1;
+        } else {
+            depth += 1;
+        }
+    }
+    true
 }
 
 /// Prefer the authored DDS replacement within one search location. Folder/season
@@ -722,6 +776,7 @@ mod tests {
     #[test]
     fn dds_precedes_exact_names_but_preserves_folder_priority() {
         let dir = std::env::temp_dir().join(format!("omsi-dds-priority-{}", std::process::id()));
+        omsi_cfg::add_content_root(dir.clone());
         let local = dir.join("local");
         let global = dir.join("global");
         std::fs::create_dir_all(&local).unwrap();
@@ -810,6 +865,39 @@ mod tests {
             find_texture("\\New Territories East\\Freetex_Lolipop\\x.bmp", &[tex.as_path()]),
             Some(sub.join("x.bmp"))
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn texture_names_from_content_stay_in_the_content_folders() {
+        let dir = std::env::temp_dir().join(format!("omsi-texture-confined-{}", std::process::id()));
+        let root = dir.join("content");
+        let model = root.join("Vehicles/Bus/model");
+        let tex = root.join("Vehicles/Bus/texture");
+        let outside = dir.join("outside");
+        for d in [&model, &tex, &outside] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(tex.join("in.bmp"), b"x").unwrap();
+        std::fs::write(tex.join("abs.bmp"), b"x").unwrap();
+        std::fs::write(outside.join("abs.bmp"), b"x").unwrap();
+        std::fs::write(outside.join("secret.bmp"), b"x").unwrap();
+        omsi_cfg::add_content_root(root.clone());
+        assert_eq!(find_texture_uncached("..\\texture\\in.bmp", &[model.as_path()]), Some(tex.join("in.bmp")));
+        assert_eq!(find_texture_uncached("..\\..\\..\\..\\outside\\secret.bmp", &[model.as_path()]), None);
+        assert_eq!(find_texture_uncached("..\\..\\..\\..\\..\\..\\..\\..\\..\\..\\outside\\secret.bmp", &[model.as_path()]), None);
+        let abs = outside.join("abs.bmp");
+        assert_eq!(find_texture_uncached(abs.to_str().unwrap(), &[tex.as_path()]), Some(tex.join("abs.bmp")));
+        assert_eq!(find_texture_uncached(tex.join("in.bmp").to_str().unwrap(), &[]), Some(tex.join("in.bmp")));
+        for remote in ["\\\\203.0.113.5\\s\\in.bmp", "//203.0.113.5/s/in.bmp", "\\\\?\\UNC\\203.0.113.5\\s\\in.bmp", "\\\\.\\pipe\\in.bmp"] {
+            assert!(names_another_machine(remote), "{remote}");
+            assert_eq!(find_texture_in_season(remote, &[tex.as_path()], None), None, "{remote}");
+        }
+        assert!(!stays_inside(&tex, "C:x.bmp"));
+        assert!(!stays_inside(&tex, "..\\C:\\x.bmp"));
+        assert!(stays_inside(&outside, "x.bmp"));
+        assert!(!stays_inside(&outside, "..\\outside\\secret.bmp"));
+        omsi_cfg::remove_content_root(&root);
         std::fs::remove_dir_all(&dir).ok();
     }
 

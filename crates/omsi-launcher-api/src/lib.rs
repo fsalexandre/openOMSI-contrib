@@ -484,6 +484,30 @@ fn favourites_save(list: Vec<String>) -> Answer {
     Ok(json!(true))
 }
 
+/// The player's own notes on maps and buses (#1791), kept in the data folder: one object,
+/// a note by its key (`map:maps/x/global.cfg`, `bus:vehicles/x/y.bus`).
+fn notes_path() -> PathBuf {
+    core::data_dir().join("notes.json")
+}
+
+fn notes_get() -> Answer {
+    Ok(std::fs::read_to_string(notes_path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(Value::is_object).unwrap_or_else(|| json!({})))
+}
+
+fn notes_save(key: String, text: String) -> Answer {
+    let mut all = notes_get()?;
+    let key = key.replace('\\', "/").to_lowercase();
+    if let Some(o) = all.as_object_mut() {
+        if text.trim().is_empty() {
+            o.remove(&key);
+        } else {
+            o.insert(key, json!(text));
+        }
+    }
+    std::fs::write(notes_path(), serde_json::to_vec_pretty(&all).map_err(err)?).map_err(err)?;
+    Ok(json!(true))
+}
+
 // --- the game's renderer: the bus preview and the city map (see `service`) -----------
 
 /// What the bus preview shows: the bus, its paint, and the map, weather, time and date that
@@ -504,8 +528,8 @@ fn preview_warm(p: &dyn Platform) -> Answer {
 /// (`busy`, `moving`, `failed`, `error`), the state, then a JPEG when the picture changed
 /// since the last one asked for.
 #[allow(clippy::too_many_arguments)]
-fn preview_frame(p: &dyn Platform, w: u32, h: u32, force: bool, dx: Option<f32>, dy: Option<f32>, zoom: Option<f32>, quality: Option<u8>) -> Result<Vec<u8>, String> {
-    let req = json!({ "cmd": "frame", "w": w.clamp(64, 4096), "h": h.clamp(64, 4096), "force": force, "dx": dx.unwrap_or(0.0), "dy": dy.unwrap_or(0.0), "zoom": zoom.unwrap_or(1.0), "quality": quality.unwrap_or(90) });
+fn preview_frame(p: &dyn Platform, w: u32, h: u32, force: bool, dx: Option<f32>, dy: Option<f32>, zoom: Option<f32>, quality: Option<u8>, view: Option<String>) -> Result<Vec<u8>, String> {
+    let req = json!({ "cmd": "frame", "w": w.clamp(64, 4096), "h": h.clamp(64, 4096), "force": force, "dx": dx.unwrap_or(0.0), "dy": dy.unwrap_or(0.0), "zoom": zoom.unwrap_or(1.0), "quality": quality.unwrap_or(90), "view": view });
     let (head, jpeg) = p.renderer(req, Duration::from_secs(30))?;
     let head = head.to_string().into_bytes();
     let mut out = Vec::with_capacity(4 + head.len() + jpeg.len());
@@ -580,6 +604,10 @@ pub fn call(cmd: &str, args: &Value, p: &dyn Platform) -> Answer {
         "vehicles" => vehicles(p),
         "weather" => weather(),
         "nearest_airport" => nearest_airport(arg::<String>(args, "map")?),
+        "tour_buses" => Ok(json!(core::tour_buses(&arg::<String>(args, "map")?, &arg::<String>(args, "group")?, &arg::<String>(args, "date")?)
+            .into_iter()
+            .map(|(file, paint, number)| json!({ "file": file, "paint": paint, "number": number }))
+            .collect::<Vec<_>>())),
         "metar_airports" => metar_airports(),
         "custom_weather" => custom_weather(arg::<String>(args, "weather")?),
         "custom_weather_text" => custom_weather_text(arg::<Value>(args, "custom")?),
@@ -627,6 +655,7 @@ pub fn call(cmd: &str, args: &Value, p: &dyn Platform) -> Answer {
         "poll" => poll(),
         "stop_game" => stop_game(arg::<u32>(args, "pid")?),
         "game_log" => game_log(arg::<u32>(args, "pid")?, arg::<Option<usize>>(args, "lines")?),
+        "model_check" => model_check(arg::<String>(args, "bus")?),
         "launch" => launch(p, arg::<Value>(args, "duty")?),
         "duty_args" => duty_args(arg::<Value>(args, "duty")?),
         "check_join" => check_join(arg::<String>(args, "text")?),
@@ -635,6 +664,8 @@ pub fn call(cmd: &str, args: &Value, p: &dyn Platform) -> Answer {
         "server_query" => server_query(arg::<String>(args, "address")?),
         "choice_save" => choice_save(arg::<Value>(args, "choice")?),
         "favourites_save" => favourites_save(arg::<Vec<String>>(args, "list")?),
+        "notes_get" => notes_get(),
+        "notes_save" => notes_save(arg::<String>(args, "key")?, arg::<String>(args, "text")?),
         "preview_look" => preview_look(p, arg::<String>(args, "bus")?, arg::<String>(args, "paint")?, arg::<String>(args, "map")?, arg::<String>(args, "weather")?, arg::<i32>(args, "time")?, arg::<String>(args, "date")?),
         "preview_warm" => preview_warm(p),
         "route_map" => route_map(p, arg::<String>(args, "map")?, arg::<String>(args, "date")?, arg::<String>(args, "trip")?),
@@ -662,7 +693,7 @@ pub fn call(cmd: &str, args: &Value, p: &dyn Platform) -> Answer {
 pub fn call_bytes(cmd: &str, args: &Value, p: &dyn Platform) -> Result<Vec<u8>, String> {
     match cmd {
         "content_picture" => content_picture(&arg::<String>(args, "path")?).ok_or_else(|| "not found".to_string()),
-        "preview_frame" => preview_frame(p, arg(args, "w")?, arg(args, "h")?, arg::<Option<bool>>(args, "force")?.unwrap_or(false), arg(args, "dx")?, arg(args, "dy")?, arg(args, "zoom")?, arg(args, "quality")?),
+        "preview_frame" => preview_frame(p, arg(args, "w")?, arg(args, "h")?, arg::<Option<bool>>(args, "force")?.unwrap_or(false), arg(args, "dx")?, arg(args, "dy")?, arg(args, "zoom")?, arg(args, "quality")?, arg(args, "view")?),
         _ => Err(format!("unknown command {cmd}")),
     }
 }
@@ -753,4 +784,27 @@ mod custom_weather_tests {
         let want = core::CustomWeather { visibility_m: 800.0, temp_c: -5.0, precip: 1, precip_intensity: 200.0, cloud_base_m: 900.0, pressure: 990.0, wind_speed: 12.5, snow_on_road: true, ..Default::default() };
         assert_eq!(back, want);
     }
+}
+
+// --- the model test ----------------------------------------------------------------
+
+/// The game program loads `bus` as it would for a drive (`openomsi --check-vehicle`) and
+/// answers its loaders' warnings and errors and the model's missing textures as JSON.
+fn model_check(bus: String) -> Answer {
+    let game = core::game_binary().ok_or_else(|| "the game program was not found: set it under Setup".to_string())?;
+    let root = core::root_dir().map_err(err)?;
+    let mut cmd = std::process::Command::new(&game);
+    cmd.arg("--check-vehicle").arg(&bus).arg("--root").arg(&root).env("OMSI_NO_GUARD", "1");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output().map_err(|e| format!("{}: {e}", game.display()))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or_else(|| {
+        let last = String::from_utf8_lossy(&out.stderr);
+        format!("the game gave no answer ({})", last.lines().last().unwrap_or("").trim())
+    })?;
+    serde_json::from_str(line).map_err(err)
 }

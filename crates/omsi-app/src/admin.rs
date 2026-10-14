@@ -9,9 +9,10 @@
 //! there (`server_command`).
 //!
 //! The password never goes over the network: the player's game asks (`auth?`), the server
-//! answers with a fresh challenge (`admin-challenge <hex>`), and the game sends
-//! `auth <SHA-256(challenge, password)>`. Wrong answers lock the administration for a
-//! while; a player's rights end when the player leaves.
+//! answers with a fresh challenge, its salt and rounds (`admin-challenge <hex> <salt>
+//! <rounds>`), and the game sends `auth <HMAC(PBKDF2(password, salt, rounds), challenge)>`.
+//! Wrong answers lock the administration for a while; a player's rights end when the
+//! player leaves.
 //!
 //! Actions (the text of a line, also what goes over the network): `kick <id>`,
 //! `ban <id>`, `bring <id>`, `goto <id>`, `time <seconds>`, `speed <factor>`,
@@ -23,7 +24,7 @@ use crate::App;
 use omsi_net::{LanSession, Role};
 
 pub(crate) use omsi_lan::admin::{duty_arg, parse_duty, ServerAdmin, TrafficOrder, LOCAL_ADMIN};
-use omsi_lan::admin::{beside, finite, notice_targets, response};
+use omsi_lan::admin::{answer, beside, finite, notice_targets};
 
 /// The clock speeds offered.
 pub(crate) const SPEEDS: [f64; 6] = [1.0, 2.0, 4.0, 8.0, 15.0, 30.0];
@@ -372,7 +373,10 @@ pub(crate) fn command(app: &mut App, from: u32, text: &str) {
         "admin-challenge" if from == 1 => {
             let pw = app.net.remotes.admin_password.take();
             if let (Some(pw), Some(l)) = (pw, app.net.lan.as_mut()) {
-                l.command(1, &format!("auth {}", response(arg.trim(), &pw)));
+                match answer(arg, &pw) {
+                    Some(a) => l.command(1, &format!("auth {a}")),
+                    None => log::warn!("LAN: the server's admin challenge is not one this game answers (an older or a foreign server)"),
+                }
             }
         }
         // (host → us) a duty given by the server's dispatch: `duty <line> <tour> <trip> <stop>`

@@ -12,11 +12,17 @@ struct Tok<'a> {
     p: usize,
 }
 
+const MAX_FRAME_DEPTH: usize = 128;
+
+fn is_space(b: u8) -> bool {
+    b.is_ascii() && (b as char).is_whitespace()
+}
+
 impl<'a> Tok<'a> {
     fn skip_ws(&mut self) {
         let b = self.s.as_bytes();
         loop {
-            while self.p < b.len() && (b[self.p] as char).is_whitespace() {
+            while self.p < b.len() && is_space(b[self.p]) {
                 self.p += 1;
             }
             if self.p + 1 < b.len() && b[self.p] == b'/' && b[self.p + 1] == b'/' {
@@ -54,7 +60,7 @@ impl<'a> Tok<'a> {
             self.p += 1;
             return Some(&self.s[start..self.p]);
         }
-        while self.p < b.len() && !(b[self.p] as char).is_whitespace() && !b"{};,<>\"".contains(&b[self.p]) {
+        while self.p < b.len() && !is_space(b[self.p]) && !b"{};,<>\"".contains(&b[self.p]) {
             self.p += 1;
         }
         Some(&self.s[start..self.p])
@@ -362,7 +368,7 @@ fn parse_objects(t: &mut Tok, ctx: &mut Ctx, xform: Mat4) -> Result<(), O3dError
                     t.next();
                 }
                 t.expect("{")?;
-                parse_frame(t, ctx, xform)?;
+                parse_frame(t, ctx, xform, 1)?;
             }
             "Mesh" => {
                 if t.peek() != Some("{") {
@@ -399,7 +405,10 @@ fn parse_objects(t: &mut Tok, ctx: &mut Ctx, xform: Mat4) -> Result<(), O3dError
     Ok(())
 }
 
-fn parse_frame(t: &mut Tok, ctx: &mut Ctx, parent: Mat4) -> Result<(), O3dError> {
+fn parse_frame(t: &mut Tok, ctx: &mut Ctx, parent: Mat4, depth: usize) -> Result<(), O3dError> {
+    if depth > MAX_FRAME_DEPTH {
+        return Err(O3dError::XFile(format!("frames nested more than {MAX_FRAME_DEPTH} deep")));
+    }
     let mut xform = parent;
     loop {
         let tok = t.next().ok_or_else(|| O3dError::XFile("eof in frame".into()))?;
@@ -438,7 +447,7 @@ fn parse_frame(t: &mut Tok, ctx: &mut Ctx, parent: Mat4) -> Result<(), O3dError>
                     t.next();
                 }
                 t.expect("{")?;
-                parse_frame(t, ctx, xform)?;
+                parse_frame(t, ctx, xform, depth + 1)?;
             }
             "Mesh" => {
                 if t.peek() != Some("{") {
@@ -970,6 +979,26 @@ Frame Root {\n FrameTransformMatrix {\n 1.0, 0.0, 0.0, 0.0,\n 0.0,-0.0, 1.0, 0.0
         }
         // the +x normal turns to Blender +y, D3D +z
         assert!((m.vertices[0].normal - Vec3::Z).length() < 1e-5, "{:?}", m.vertices[0].normal);
+    }
+
+    #[test]
+    fn names_with_accented_letters_load() {
+        let x = b"xof 0303txt 0032\nFrame \x8Aasi\xA0\x85 {\n Material \x8Aed\xE1 { 1;1;1;1;; 1; 0;0;0;; 0;0;0;; }\n Mesh {\n 3;\n 0;0;0;,\n 1;0;0;,\n 0;1;0;;\n 1;\n 3;0,1,2;;\n }\n}\n";
+        assert_eq!(parse_x(x).unwrap().triangles.len(), 1);
+    }
+
+    #[test]
+    fn frames_nested_too_deep_are_an_error() {
+        let deep = |n: usize| {
+            let mut x = String::from("xof 0303txt 0032\n");
+            x.push_str(&"Frame{".repeat(n));
+            x.push_str("Mesh{3;0;0;0;,1;0;0;,0;1;0;;1;3;0,1,2;;}");
+            x.push_str(&"}".repeat(n));
+            x
+        };
+        assert_eq!(parse_x(deep(MAX_FRAME_DEPTH).as_bytes()).unwrap().triangles.len(), 1);
+        assert!(parse_x(deep(MAX_FRAME_DEPTH + 1).as_bytes()).is_err());
+        assert!(parse_x(deep(200_000).as_bytes()).is_err());
     }
 
     /// A Blender export: the root frame swaps y and z, the child frame turns, scales and

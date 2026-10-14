@@ -12,6 +12,8 @@ pub(super) fn options_pages(app: &App) -> Vec<Page> {
     let game: Vec<(String, String)> = vec![
         switch_row(app, "navigator", "Navigator", "Enables/Disables the Minimap"),
         switch_row(app, "nav_ai", "AI vehicles on the map", "Shows/hides the other (AI) vehicles on the Minimap and the city map"),
+        switch_row(app, "nav_surface", "Map surface under the roads", "Shows the map's own water, green land, rivers and rail under the roads of the Minimap and the city map, when the map has a package"),
+        switch_row(app, "nav_light", "Light map", "The Minimap and the city map in a light look"),
         switch_row(app, "nav_arrows", "Route arrows (as in OMSI 2)", "Shows OMSI 2's route arrows over the road"),
         pick("navigator_corner", "Corner", later),
         switch_row(app, "get_up", "Ability to get up (Ctrl+Shift+G)", "Allows you to get out of the car and explore the world"),
@@ -28,6 +30,7 @@ pub(super) fn options_pages(app: &App) -> Vec<Page> {
         pick("ai_unsched_factor", "Random traffic", later),
         pick("ai_max_scheduled", "Timetable vehicles", later),
         pick("ai_max_parked", "Parked cars", later),
+        pick("ai_max_humans", "People at once", later),
     ]
         .into_iter()
         .flatten()
@@ -217,7 +220,9 @@ pub(super) fn options_pages(app: &App) -> Vec<Page> {
         slider_row(app, "mouse_sens", "Mouse steering sensitivity", "Adjust how much the steering wheel turns based on mouse movement", &pct),
         slider_row(app, "mouse_pedal_strength", "Mouse pedal strength", "Adjust how much mouse travel is needed to reach full throttle or braking", &|v| if (v - 1.0).abs() < 0.01 { "OMSI".to_string() } else { format!("{:.0}%", v * 100.0) }),
         switch_row(app, "mouse_smooth", "Smooth mouse steering", "The wheel eases after the cursor; off: it follows at once, as in OMSI"),
+        switch_row(app, "mouse_pedals", "The mouse works the pedals", "Up the throttle, down the brake, as in OMSI; off: the mouse only steers, the pedals stay on the keys"),
         switch_row(app, "mouse_hold", "Hold the cursor while steering", "The wheel reaches its lock past the window's edges; off: the crosshair stays free and without delay, as in OMSI"),
+        slider_row(app, "key_pedal_speed", "Pedal keys speed", "How fast the throttle and brake keys press their pedals; slower is finer", &|v| if (v - 1.0).abs() < 0.01 { "OMSI".to_string() } else { format!("{:.0}%", v * 100.0) }),
         switch_row(app, "steering_linear", "Steering linearity (keys at OMSI's steady pace)", "Keyboard steering at OMSI's steady pace"),
         switch_row(app, "old_steering", "Old Steering (the wheel stays, turn it back yourself)", "The wheel stays where the keys left it"),
         switch_row(app, "red_steer_spd", "Dynamic steering (slower keys at speed, OMSI's redSteerSpd)", "The steering keys act slower at speed"),
@@ -288,6 +293,10 @@ pub(super) fn vehicle_pages(app: &App) -> Vec<Page> {
     let mut fleet: Vec<(String, String)> = Vec::new();
     if has || !app.session.placed.is_empty() {
         fleet.push(button("Drive the next vehicle", "Switch", "Take the wheel of another vehicle standing in the world", "switch"));
+        // (one of them by name, rather than going through them one by one, #2026)
+        if app.session.placed.len() > 1 {
+            fleet.push(opens("Drive another vehicle", "Choose which of the vehicles standing in the world to drive", "switchto"));
+        }
     }
     fleet.push(opens("Place a vehicle", "Place a vehicle of your choice", "place"));
     if has {

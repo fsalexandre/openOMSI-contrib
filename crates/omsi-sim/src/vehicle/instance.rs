@@ -415,4 +415,23 @@ impl VehicleInstance {
             }
         }
     }
+
+    /// The scheme's `[setvar]`s set again, before every frame of the scripts: Omsi.exe
+    /// writes them each frame, not once, and scripts count on it. The Ikarbus cockpit
+    /// turns `v_font` to the Cyrillic font (7) while its switch is on and leaves it there
+    /// when the switch goes off; the scheme's `v_font 0` every frame is what brings the
+    /// Latin font back, which the matrix then draws at the next terminus. Set once, the
+    /// display stayed Cyrillic for good.
+    pub(crate) fn apply_scheme_vars_each_frame(&mut self) {
+        let Some(Some(i)) = self.host.paint_scheme else { return };
+        if let Some(s) = self.ty.paint_schemes.get(i) {
+            if s.set_vars.is_empty() {
+                return;
+            }
+            let vars = s.set_vars.clone();
+            for (var, v) in vars {
+                self.set_var(&var, v);
+            }
+        }
+    }
 }

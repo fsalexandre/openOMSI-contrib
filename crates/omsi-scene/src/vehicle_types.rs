@@ -621,14 +621,11 @@ pub(super) fn vehicle_texture_names(
     vt: &omsi_sim::VehicleType,
     scheme: Option<usize>,
 ) -> Vec<(String, Vec<PathBuf>)> {
-    let mut dirs = vt.texture_dirs(root);
-    let (subst, scheme_dir) = match scheme {
+    let dirs = vt.texture_dirs(root);
+    let (subst, _scheme_dir) = match scheme {
         Some(i) => vt.scheme_substitutions(i),
         None => (vt.default_substitutions(root), None),
     };
-    if let Some(d) = scheme_dir {
-        dirs.insert(0, d);
-    }
     let subst = |name: &str| -> String {
         subst
             .get(&name.to_ascii_lowercase())
@@ -688,14 +685,11 @@ pub(super) fn vehicle_bump_names(
     if omsi_cfg::flags::OMSI_NO_BUMP.is_set() || omsi_cfg::flags::OMSI_NO_ENVMAP.is_set() {
         return Vec::new();
     }
-    let mut dirs = vt.texture_dirs(root);
-    let (subst, scheme_dir) = match scheme {
+    let dirs = vt.texture_dirs(root);
+    let (subst, _scheme_dir) = match scheme {
         Some(i) => vt.scheme_substitutions(i),
         None => (vt.default_substitutions(root), None),
     };
-    if let Some(d) = scheme_dir {
-        dirs.insert(0, d);
-    }
     let mut out: Vec<(String, Vec<PathBuf>)> = Vec::new();
     for vm in &vt.meshes {
         for o in vm.overrides.iter().filter(|o| o.envmap.is_some()) {

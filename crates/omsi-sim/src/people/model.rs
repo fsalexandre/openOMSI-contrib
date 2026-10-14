@@ -72,6 +72,10 @@ pub enum State {
     /// Task 8 without a path (+0x2f0 = -1): somebody who got off where no pavement is
     /// stands where they are until the player is gone.
     Standing,
+    /// Somebody who got off where no pavement is, on the way to `to`: a few steps away
+    /// from the door and to the side, so the doorway stays free and no crowd stands at it
+    /// (Omsi.exe left them where they stepped down); there they stand (`Standing`).
+    Leaving { to: DVec3 },
     /// A passenger (see `humans_pax`).
     Pax(Box<Pax>),
 }
@@ -82,6 +86,7 @@ impl State {
             State::Strolling(_) => "WalkStreet",
             State::Idle => "Idle",
             State::Standing => "WalkStreet",
+            State::Leaving { .. } => "WalkStreet",
             State::Pax(p) => p.task.name(),
         }
     }
@@ -359,6 +364,16 @@ pub struct PeopleSim {
     /// The timetable's name of each stop object (`Schedule::stop_names`), the names the
     /// targets above are made of.
     pub stop_names: Option<HashMap<i64, String>>,
+    /// Per bus stop, the stop objects its trips go on to by timetable name
+    /// (`Schedule::stop_target_objects`): whose exit weight a destination has.
+    pub stop_target_objects: Option<HashMap<i64, HashMap<String, Vec<i64>>>>,
+    /// How many of `types` (the first) people are drawn from at random: the figures put
+    /// after them (`type_index`: the player's figure on foot - the map's driver -, other
+    /// players' figures) are nobody's to wear but theirs.
+    pub pool_types: usize,
+    /// What a passenger of the player's bus has just said (the voice's name, `TooCold_1`):
+    /// the HUD shows OMSI's hint for it (`Languages/*_basic*.olf`, `RL_PassDlg_<name>`).
+    pub dialog: Option<String>,
     /// The player's duty (`set_duty`): its trip, the stop of it the duty is due at, and
     /// whether the trip has reached its last stop. None: free drive, and nobody waiting
     /// boards the player's bus.

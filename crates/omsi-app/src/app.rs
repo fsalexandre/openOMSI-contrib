@@ -106,7 +106,7 @@ impl App {
             // back from the background (a phone): the window's surface is made again (on the
             // device whose renderer is still being built, while it is)
             if self.gfx.surface.is_none() {
-                let size = window.inner_size();
+                let size = crate::platform::surface_size(&window);
                 if let Some(r) = self.renderer.as_ref() {
                     let vsync = self.settings.vsync && !self.vr_active();
                     self.gfx.surface = SurfaceState::new_with(&self.gfx.instance, window.clone(), r, size.width.max(1), size.height.max(1), vsync).ok();
@@ -241,7 +241,7 @@ impl App {
         // the window's surface on the device already, for the pictures until the renderer
         // is there
         let early = start.early().then(|| {
-            let size = window.inner_size();
+            let size = crate::platform::surface_size(&window);
             SurfaceState::early(&self.gfx.instance, window.clone(), &start.device, start.format, size.width, size.height, self.settings.vsync).ok()
         }).flatten();
         let had_surface = early.is_some();
@@ -332,7 +332,7 @@ impl App {
         }
         crate::lights::load_smoke_texture(&mut renderer, &self.args.root);
         crate::lights::set_corona_root(&self.args.root);
-        let size = window.inner_size();
+        let size = crate::platform::surface_size(&window);
         let vsync = self.settings.vsync && !self.vr_active();
         // the early surface goes on with the renderer; made anew when the renderer is on
         // another device, or when there was none (ANGLE's, see `RendererStart::begin`). A
@@ -573,6 +573,8 @@ impl App {
                 if let Some(n) = self.menus.navigator.as_mut() {
                     n.arrows = self.settings.nav_arrows;
                     n.show_ai = self.settings.nav_ai;
+                    n.show_surface = self.settings.nav_surface;
+                    n.light = self.settings.nav_light;
                 }
                 if let Some(d) = self.args.driver.as_deref() {
                     self.session.career = career::Career::load(&self.args.root, d);
@@ -883,7 +885,7 @@ impl App {
         }
         if reconfigure {
             if let (Some(s), Some(r), Some(win)) = (self.gfx.surface.as_mut(), self.renderer.as_ref(), self.window.as_ref()) {
-                let size = win.inner_size();
+                let size = crate::platform::surface_size(win);
                 s.resize(r, size.width, size.height);
             }
         }
@@ -977,6 +979,11 @@ pub(crate) struct CamBlend {
     /// What the glide's last picture was off from the plain camera by, let go of over a
     /// fraction of a second after the hand-over (so that nothing is left to jump).
     pub carry: Option<CamCarry>,
+    /// The zoom the picture has come to while it glides from the camera left's zoom to the
+    /// one taken's (each cab camera keeps its own, #2183; it jumped, #2306).
+    pub zoom_from: Option<f32>,
+    /// The zoom drawn last frame: where the next glide's zoom starts from.
+    pub zoom_drawn: Option<f32>,
 }
 
 /// A small difference between two pictures of the camera (world position, angles in degrees,

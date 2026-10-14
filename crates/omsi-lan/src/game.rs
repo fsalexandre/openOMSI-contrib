@@ -420,7 +420,12 @@ pub fn start(args: &LanConfig, host: &dyn LanHost) -> Option<LanSession> {
                 (*port, false)
             };
             match LanSession::host(p, &player_name(args), world, try_next) {
-                Ok(s) => Some(s),
+                Ok(mut s) => {
+                    if args.server {
+                        s.tell_strangers_the_session();
+                    }
+                    Some(s)
+                }
                 Err(e) => {
                     log::warn!("LAN: cannot host on port {p}: {e}");
                     write_failure(&format!("cannot host on port {p}: {e}"));
@@ -561,8 +566,8 @@ pub fn share_mods(args: &mut LanConfig, lan: &mut LanSession) {
             if !args.server {
                 crate::mods::upload::accept(true);
             }
-            if let Some(port) = lan.local_addr().map(|a| a.port()) {
-                crate::mods::serve(port, lan.session, &mod_source(args));
+            if let (Some(port), Some(key)) = (lan.local_addr().map(|a| a.port()), lan.host_key()) {
+                crate::mods::serve(port, key, &mod_source(args));
             }
         }
         Role::Client => {
@@ -1344,6 +1349,10 @@ fn freetex_names(ty: &omsi_sim::VehicleType) -> Vec<String> {
     names
 }
 
+fn freetex_ids(ty: &omsi_sim::VehicleType) -> Vec<u16> {
+    freetex_names(ty).iter().filter_map(|n| ty.program.str_var(n)).map(|i| i as u16).collect()
+}
+
 /// What the vehicle's `[matl_freetex]` variables hold now (see [`freetex_names`]).
 fn freetex_values(v: &omsi_sim::VehicleInstance) -> Vec<String> {
     freetex_names(&v.ty)
@@ -1359,6 +1368,9 @@ fn show_freetex(v: &mut omsi_sim::VehicleInstance, values: &[String]) {
         return;
     }
     for (name, value) in freetex_names(&v.ty).iter().zip(values) {
+        if !omsi_net::remote_text::freetex_ok(value) {
+            continue;
+        }
         if let Some(i) = v.ty.program.str_var(name) {
             if let Some(s) = v.state.str_vars.get_mut(i as usize) {
                 if s != value {
@@ -2082,8 +2094,9 @@ fn sync_vars(lan: &mut LanSession, game: &mut LanGame, player: Option<&omsi_sim:
                 rv.synced.insert(id, x);
             }
         }
+        let pictures = if v.strings.is_empty() { Vec::new() } else { freetex_ids(&rv.vehicle.ty) };
         for (id, s) in v.strings {
-            if (id as usize) < ns {
+            if (id as usize) < ns && omsi_net::remote_text::remote_string_ok(&s, pictures.contains(&id)) {
                 rv.synced_strings.insert(id, s);
             }
         }

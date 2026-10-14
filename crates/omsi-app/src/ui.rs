@@ -341,6 +341,9 @@ pub struct Frame<'a> {
     pub menu: Option<(usize, &'a [(&'a str, &'a str)])>,
     /// The first line shown when a finger scrolled the menu (`App::menu_top`).
     pub menu_top: Option<f32>,
+    /// A seat or view slider of the settings window held by the mouse (its line): only that
+    /// line is drawn, over the undimmed picture, so the view can be seen changing (#2359).
+    pub menu_peek: Option<usize>,
     /// Ids of the game menu's lines that are greyed out and cannot be chosen (the timetable
     /// without an active route).
     pub menu_disabled: &'a [&'a str],

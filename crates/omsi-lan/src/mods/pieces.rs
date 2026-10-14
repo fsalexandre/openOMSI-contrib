@@ -104,7 +104,8 @@ pub(crate) fn send_packed(out: &mut impl Write, raw: u64, codec: char, wire: &[u
 /// bytes it took on the wire.
 pub(crate) fn receive(input: &mut impl BufRead, raw: u64) -> Result<(Vec<u8>, u64), String> {
     let mut line = String::new();
-    if input.read_line(&mut line).map_err(|e| format!("{}: {e}", super::CONNECTION_LOST))? == 0 {
+    // (a header is a few words: a longer line from the host ends the transfer)
+    if super::read_line_within(input, &mut line, super::MAX_REPLY).map_err(|e| format!("{}: {e}", super::CONNECTION_LOST))? == 0 {
         return Err(format!("{}: closed by the host", super::CONNECTION_LOST));
     }
     let t = line.trim();

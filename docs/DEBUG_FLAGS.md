@@ -266,7 +266,7 @@ effect. On Android, `openOMSI/env.txt` holds `NAME=value` lines that are set bef
 | `OMSI_NO_GLASS_PICTURE` | bool | off | frame | render | No picture behind the glass (rain films). |
 | `OMSI_NO_GROUND_PAINT` | bool | off | use | scene | No painted ground layers. |
 | `OMSI_NO_GROUND_SPLINE_BATCHING` | bool | off | use | scene | No batching of ground splines. |
-| `OMSI_NO_GUARD` | bool | off | use | guard | No start guard: a start that crashes or hangs is not healed by an update or by going back to the version before. |
+| `OMSI_NO_GUARD` | bool | off | use | guard, launcher-api | No start guard: a start that crashes or hangs is not healed by an update or by going back to the version before. |
 | `OMSI_NO_INTERP` | bool | off | once | lan | The old way without interpolation, for comparing. |
 | `OMSI_NO_LAN_MODS` | bool | off | use | lan | LAN: do not exchange mods. |
 | `OMSI_NO_LIGHT_MAP` | bool | off | use | scene | No night light maps on the tiles (A/B). |

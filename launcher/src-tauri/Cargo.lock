@@ -1643,8 +1643,6 @@ checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
 [[package]]
 name = "glib"
 version = "0.18.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5"
 dependencies = [
  "bitflags 2.13.2",
  "futures-channel",
@@ -2958,7 +2956,7 @@ dependencies = [
  "log",
  "omsi-cfg",
  "ring",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tungstenite",
  "ureq",
 ]
@@ -2986,7 +2984,7 @@ dependencies = [
  "omsi-cfg",
  "omsi-launcher-core",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "ureq",
  "windows",
  "zip",
@@ -3028,6 +3026,7 @@ dependencies = [
  "omsi-o3d",
  "omsi-scenery",
  "omsi-script",
+ "omsi-texture",
  "omsi-timetable",
  "omsi-vehicle",
  "omsi-world",

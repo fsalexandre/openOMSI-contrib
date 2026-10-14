@@ -40,6 +40,7 @@ impl Builder {
         if !missing.iter().any(|m| *m) {
             return;
         }
+        self.mesh.drop_bad_triangles();
         let mut acc = vec![Vec3::ZERO; self.mesh.vertices.len()];
         for t in &self.mesh.triangles {
             let [a, b, c] = t.indices.map(|i| self.mesh.vertices[i as usize].position);
@@ -80,10 +81,13 @@ pub(crate) fn texture_name(model: &Path, file: &str) -> String {
     }
     let rel = Path::new(&file);
     let mut tries: Vec<PathBuf> = Vec::new();
-    if !rel.is_absolute() && file.as_bytes().get(1) != Some(&b':') {
-        tries.push(dir.join(rel));
-    }
     let bare = file.rsplit('/').next().unwrap_or(&file).to_string();
+    if bare.contains(':') || bare.trim_matches(['.', ' ']).is_empty() {
+        return bare;
+    }
+    if !rel.is_absolute() && !file.contains(':') {
+        tries.push(omsi_cfg::resolve_path(dir, &file));
+    }
     tries.push(dir.join(&bare));
     for sub in ["texture", "textures", "Texture", "Textures"] {
         tries.push(dir.join(sub).join(&bare));
@@ -184,6 +188,39 @@ mod tests {
         assert!(base64("a*b").is_none());
         assert_eq!(percent_decode("my%20tex.png"), "my tex.png");
         assert_eq!(percent_decode("100%"), "100%");
+    }
+
+    #[test]
+    fn a_model_picture_named_outside_the_content_folder_is_not_taken() {
+        let dir = std::env::temp_dir().join(format!("omsi-o3d-model-tex-{}", std::process::id()));
+        let root = dir.join("content");
+        let model = root.join("Vehicles/Bus/model");
+        let outside = dir.join("outside");
+        for d in [&model, &root.join("Vehicles/Bus/pics"), &outside] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(root.join("Vehicles/Bus/pics/inside-pic.png"), b"x").unwrap();
+        std::fs::write(outside.join("outside-pic.png"), b"x").unwrap();
+        omsi_cfg::add_content_root(root.clone());
+        let m = model.join("bus.gltf");
+        assert_eq!(texture_name(&m, "../pics/inside-pic.png"), "inside-pic.png");
+        assert!(omsi_cfg::model_texture("inside-pic.png").is_some());
+        assert_eq!(texture_name(&m, "../../../../../../../../outside/outside-pic.png"), "outside-pic.png");
+        assert_eq!(omsi_cfg::model_texture("outside-pic.png"), None);
+        assert_eq!(texture_name(&m, "C:outside-pic.png"), "C:outside-pic.png");
+        omsi_cfg::remove_content_root(&root);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn normals_are_made_without_the_triangles_that_name_missing_vertices() {
+        let mut b = Builder::default();
+        let i = [Vec3::ZERO, Vec3::X, Vec3::Y].map(|p| b.vertex(p, Vec3::Z, Vec2::ZERO));
+        b.triangle(i[0], i[1], i[2], 0);
+        b.triangle(0, 1, 500, 0);
+        b.fill_normals(&[true, true, true]);
+        assert_eq!(b.mesh.triangles.len(), 1);
+        assert!((b.mesh.vertices[1].normal - Vec3::new(0.0, 0.0, -1.0)).length() < 1e-6);
     }
 
     #[test]

@@ -4,6 +4,111 @@ Every push to `main` is released as `MAJOR.MINOR.COMMIT` (see
 [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-Project/openOMSI/releases) page.
 
+## 0.2.48 - 2026-10-13
+
+Additional security hardening and verification for mods, maps and online sessions (thanks to @thibautgnt); the details are in the list below. **Online play needs 0.2.48 on every computer** (the session protocol moves from 6 to 7; 0.2.47 was not released; an older game is refused cleanly when it joins), and a dedicated server's `admin_password` needs at least 8 characters.
+
+### New
+- **Model test** in the launcher, for modders: a bus is loaded exactly as for a drive, without a window, and every warning and error of its `.bus`, model, meshes, scripts, constfiles and paint schemes is listed, with the textures that are not there; the running game's warnings show live beside it (`openomsi --check-vehicle`) ([#2524](https://github.com/openOMSI-org/openOMSI/pull/2524), by @icacar98-dot).
+- **The navigator and the city map show the land under the roads** on a map that brings a package (`Maps/<Map>/openomsi-realmap`): water, parks and woods, rivers, rail and borders, in a dark or a light look; two new settings (Navigator surface, Light navigator). See docs/MAP_PACKAGE.md ([#2529](https://github.com/openOMSI-org/openOMSI/pull/2529), by @lmonteirotech).
+- **The launcher grows with its window** on a big or wide screen, and has a **Launcher size** setting; **Launcher layout: Classic** brings back the Drive page in steps (Bus, Day & weather, Map & duty); the bus preview can be looked at from the **passenger's and the driver's seat**; the launcher asks less of a weaker computer and rests while you drive ([#2493](https://github.com/openOMSI-org/openOMSI/pull/2493), by @thibautgnt; it supersedes #1631).
+
+### Fixes
+- **Hardening** (by @thibautgnt): mod archives can no longer write outside the mod being installed; texture and other content names cannot point at another computer (`\\server\share`) or climb out of the content folders, nor can another player's roller blind and script strings; online sessions: the host is signed (a per-session key), so nobody can pose as it on the relay or for its mods, a player's place cannot be taken with an overheard hello, the session is not told to strangers from outside the network, and a dedicated server's admin login uses PBKDF2 instead of one hash over plain UDP; bans hold the player's address; the mods download, the WebSocket gateway and files that claim billions of entries can no longer exhaust memory or hang the game; crafted glTF, `.x`, TGA and zip files no longer crash it; Android: other apps can no longer fake an update's answer; the website shows issue text through an allowlist with a Content-Security-Policy.
+- Hardening: the launcher's glib (GTK3, Linux) has the fix of RUSTSEC-2024-0429: its `VariantStrIter` wrote through a pointer it did not own mutably.
+- Hardening: ruzstd 0.9.1, the zstd decoder of plugin packages (`.oop`): a tiny crafted file could make it ask for all the memory (RUSTSEC-2026-0344).
+- **The loading screen has its plain dark background again**, without the map's picture (0.2.46 put it there, #1383).
+- **Passengers read the destination from the IBIS**: the depot row the IBIS was set to, not the display script's own row - nobody boarded a bus showing a code typed past the list ([#2508](https://github.com/openOMSI-org/openOMSI/pull/2508), by @icacar98-dot).
+- **With one door open, nobody waits at a shut door with a button**: they walk to the open one ([#2509](https://github.com/openOMSI-org/openOMSI/pull/2509), by @icacar98-dot).
+- **People who get off where there is no pavement spread out beside the bus** instead of crowding the doorway, before they go ([#2510](https://github.com/openOMSI-org/openOMSI/pull/2510), by @icacar98-dot).
+- **The map's drivers stay out of the passengers** also when its humans.txt names nobody installed ([#2511](https://github.com/openOMSI-org/openOMSI/pull/2511), by @icacar98-dot).
+- **A repaint's folder no longer paints over the details of the other repaints in it**: only what its `.cti` names comes from there ([#2515](https://github.com/openOMSI-org/openOMSI/pull/2515), by @icacar98-dot).
+- **A paint scheme's `[setvar]`s are written before every frame of the scripts**, as Omsi.exe does - the IK-201's display went back to Latin letters only so ([#2519](https://github.com/openOMSI-org/openOMSI/pull/2519), by @icacar98-dot).
+- **Serbian and Croatian text in Windows-1250** (č, ć, đ with š or ž) is read as such, no longer as Western letters ([#2521](https://github.com/openOMSI-org/openOMSI/pull/2521), by @icacar98-dot).
+- Mac: the app is no longer overwritten by the game program beside it ([#2522](https://github.com/openOMSI-org/openOMSI/pull/2522), by @thibautgnt).
+- iPhone: the touch buttons answer where they are drawn from the first drive ([#2491](https://github.com/openOMSI-org/openOMSI/pull/2491), by @thibautgnt).
+- Dependencies: the crates' minor updates, pollster 1.0 and sha2 0.11 ([#2544](https://github.com/openOMSI-org/openOMSI/pull/2544), [#2545](https://github.com/openOMSI-org/openOMSI/pull/2545), [#2546](https://github.com/openOMSI-org/openOMSI/pull/2546)); Dependabot now comes once a month with the major versions grouped.
+
+## 0.2.46 - 2026-10-13
+
+### New
+- Setting "The mouse works the pedals" - off, mouse steering only steers and the pedals stay on the keys ([#1704](https://github.com/openOMSI-org/openOMSI/issues/1704)).
+- Setting "Pedal keys speed" for a finer throttle and brake on the keyboard ([#1371](https://github.com/openOMSI-org/openOMSI/issues/1371)).
+- Keys for the radio - next / previous station, louder / quieter - for the keyboard, a wheel or a pad ([#1293](https://github.com/openOMSI-org/openOMSI/issues/1293), [#1462](https://github.com/openOMSI-org/openOMSI/issues/1462)).
+- The mouse's side buttons (Mouse 4, Mouse 5) can be bound like keys ([#2281](https://github.com/openOMSI-org/openOMSI/issues/2281)).
+- Key "Free camera keys on/off": the free view's W, A, S, D... can work the bus instead ([#1779](https://github.com/openOMSI-org/openOMSI/issues/1779)).
+- What passengers say is shown as OMSI's hints (too cold, too little change, 'Pardon?') ([#1806](https://github.com/openOMSI-org/openOMSI/issues/1806)).
+- Setting "People at once" (Settings, Gameplay; OMSI's AI humans limit, 50-1000) in the launcher and the game menu ([#2087](https://github.com/openOMSI-org/openOMSI/issues/2087)).
+- Launcher: a calendar for the start date, and the mouse wheel turns the start time and date ([#2351](https://github.com/openOMSI-org/openOMSI/issues/2351), [#1625](https://github.com/openOMSI-org/openOMSI/issues/1625)).
+- Launcher: it says that it rests while a game runs, and draws nothing meanwhile ([#2362](https://github.com/openOMSI-org/openOMSI/issues/2362)).
+- Information bar: the road's speed limit and a stop request ([#2476](https://github.com/openOMSI-org/openOMSI/issues/2476), [#1767](https://github.com/openOMSI-org/openOMSI/issues/1767)).
+- Launcher: a tour that does not run on the chosen date can be driven on its next day with one click ([#1626](https://github.com/openOMSI-org/openOMSI/issues/1626)).
+- Quick menu: the destination form offers the depot file's destinations ([#2219](https://github.com/openOMSI-org/openOMSI/issues/2219)).
+- Touch controls: an announcement button (Q) ([#2107](https://github.com/openOMSI-org/openOMSI/issues/2107)).
+- Screenshots leave the interface out, as in OMSI ([#1265](https://github.com/openOMSI-org/openOMSI/issues/1265)).
+- The loading screen shows the map's picture ([#1383](https://github.com/openOMSI-org/openOMSI/issues/1383)).
+- Updates and downloads use the system's proxy ([#1000](https://github.com/openOMSI-org/openOMSI/issues/1000)).
+- Game menu: choose which placed vehicle to drive ([#2026](https://github.com/openOMSI-org/openOMSI/issues/2026)).
+- Launcher: the map's next departures over all lines ([#1885](https://github.com/openOMSI-org/openOMSI/issues/1885)).
+- Launcher: a tour offers the buses its timetable gives it ([#1886](https://github.com/openOMSI-org/openOMSI/issues/1886)).
+- Launcher: notes of your own on maps and buses ([#1791](https://github.com/openOMSI-org/openOMSI/issues/1791)).
+- Launcher: the R and N keys say which gearbox they are for ([#1691](https://github.com/openOMSI-org/openOMSI/issues/1691)).
+
+### Fixes
+- **AI traffic no longer stands at green lights** near a vehicle whose script claims priority (the player's bus on some maps, ambulances and fire engines with the siren on): a junction is kept for an emergency vehicle only while it comes, and only against the cars whose way meets its; a left turn gives way to the oncoming traffic even when it got there first ([#2431](https://github.com/openOMSI-org/openOMSI/issues/2431), [#2307](https://github.com/openOMSI-org/openOMSI/issues/2307), [#2373](https://github.com/openOMSI-org/openOMSI/issues/2373)).
+- **Cars no longer vanish in the middle of the road** where a junction's paths have no traffic density of their own ([#2466](https://github.com/openOMSI-org/openOMSI/issues/2466)).
+- **AI traffic gives way as in OMSI 2**: where a map sets no priorities, whoever gets to the junction first goes first - no more main-road cars stopping for every car out of a side road on their right ([#2058](https://github.com/openOMSI-org/openOMSI/issues/2058), [#1452](https://github.com/openOMSI-org/openOMSI/issues/1452)).
+- **AI cars no longer pass over a solid centre line** (`[rule] overtaking_prohib`, as OMSI reads it): the queue behind a bus at its stop waits ([#2048](https://github.com/openOMSI-org/openOMSI/issues/2048), [#1931](https://github.com/openOMSI-org/openOMSI/issues/1931)).
+- **No road spray from aircraft and trains** of the AI traffic over a wet road ([#1330](https://github.com/openOMSI-org/openOMSI/issues/1330)).
+- Free drive: a line and tour can be picked again from the pause menu with the timetable buses switched off ([#2016](https://github.com/openOMSI-org/openOMSI/issues/2016)).
+- Night tours run on past midnight: their timetable buses come after 24:00, a duty picked after midnight is the night's tour under way, and the launcher keeps the trip picked after midnight ([#2166](https://github.com/openOMSI-org/openOMSI/issues/2166)).
+- Automatic IBIS: a trip without a line number that the depot file runs as line 000 is typed itself, not the tour's next numbered trip, and its passengers board ([#2425](https://github.com/openOMSI-org/openOMSI/issues/2425)).
+- On foot during a duty, the navigator stays with the bus: walking round it no longer recalculates the route or moves the stops on ([#2426](https://github.com/openOMSI-org/openOMSI/issues/2426)).
+- The next trip of a duty begins as soon as the terminus is served, as in OMSI 2: the people at the terminus board for it ([#2148](https://github.com/openOMSI-org/openOMSI/issues/2148), [#2060](https://github.com/openOMSI-org/openOMSI/issues/2060)).
+- AI buses queue close up at a stop, and the one right behind the bus at the stop takes people on at the same time, as in OMSI 2 ([#2429](https://github.com/openOMSI-org/openOMSI/issues/2429)).
+- A timetable bus waiting at the first stop of its next trip keeps its doors open for the passengers ([#2433](https://github.com/openOMSI-org/openOMSI/issues/2433)).
+- Timetable buses leave a terminus on time even while the player watches it ([#2235](https://github.com/openOMSI-org/openOMSI/issues/2235)).
+- An AI bus whose script never shuts its doors no longer stands at the stop for good ([#1801](https://github.com/openOMSI-org/openOMSI/issues/1801), [#1921](https://github.com/openOMSI-org/openOMSI/issues/1921)).
+- Door hit sounds (SD200/SD202, Kajosoft buses) play to their end instead of a short click ([#611](https://github.com/openOMSI-org/openOMSI/issues/611), [#1268](https://github.com/openOMSI-org/openOMSI/issues/1268)).
+- An AI car that glitches out of sight no longer blasts its engine sound at full volume ([#2416](https://github.com/openOMSI-org/openOMSI/issues/2416)).
+- The personnel file keeps the kilometres of every bus driven ([perbusinfo]), as OMSI does ([#2475](https://github.com/openOMSI-org/openOMSI/issues/2475)).
+- Buses can be refuelled and charged in depots whose building is marked [depot], as in OMSI ([#1847](https://github.com/openOMSI-org/openOMSI/issues/1847)).
+- In LAN play the AI buses show the repaint their AI list gives them on every player's screen ([#2018](https://github.com/openOMSI-org/openOMSI/issues/2018)).
+- Another player's articulated bus: its rear section keeps the lean their game gives it, and its wheels stand still when the bus does ([#1177](https://github.com/openOMSI-org/openOMSI/issues/1177)).
+- The game opens on the screen the launcher stands on again ([#1959](https://github.com/openOMSI-org/openOMSI/issues/1959), [#2025](https://github.com/openOMSI-org/openOMSI/issues/2025)).
+- Place a vehicle: "Random livery" really picks a random livery ([#2410](https://github.com/openOMSI-org/openOMSI/issues/2410)).
+- Launcher: the bus picker shows the whole name of a bus ([#2355](https://github.com/openOMSI-org/openOMSI/issues/2355)).
+- Android: Change the keys and Set up a wheel open the Controls page ([#2308](https://github.com/openOMSI-org/openOMSI/issues/2308)).
+- Linux: when the launcher cannot start (no WebKitGTK 4.1, e.g. SteamOS) the game says why in a dialog, with the steps for SteamOS ([#2458](https://github.com/openOMSI-org/openOMSI/issues/2458)).
+- Game menu: moving the seat, head pitch or field of view shows the view behind the menu ([#2359](https://github.com/openOMSI-org/openOMSI/issues/2359)).
+- Textures: "Compress textures on loading" no longer changes the colour of small colour swatches in texture atlases (handrails, buttons) ([#2292](https://github.com/openOMSI-org/openOMSI/issues/2292)).
+- Transparency: a fully transparent [matl_alpha] 2 mesh hides what its model draws behind it again, as in OMSI (masks such as scroll boxes), in Enhanced as well ([#2059](https://github.com/openOMSI-org/openOMSI/issues/2059)).
+- Enhanced: bus and car paint that mirrors only a little is satin again, no longer shining like glass against the light ([#2474](https://github.com/openOMSI-org/openOMSI/issues/2474)).
+- Enhanced: the headlamps' beam tilts with the bus on ramps and hills instead of staying level ([#1897](https://github.com/openOMSI-org/openOMSI/issues/1897)).
+- Enhanced: displays and panels with a light map are as bright by day as in Vanilla+ ([#2051](https://github.com/openOMSI-org/openOMSI/issues/2051)).
+- Vanilla+: nights, dusk and shade are as dark as in OMSI 2; the light is laid on the texture the way OMSI does ([#300](https://github.com/openOMSI-org/openOMSI/issues/300), [#1612](https://github.com/openOMSI-org/openOMSI/issues/1612)).
+- Ctrl+Shift+U (and other chords with Ctrl or Alt) no longer also runs the game's own Shift+U, Shift+R, Shift+M, Shift+N or Shift+number; those and Ctrl+Shift+D/E/G, Ctrl+M step aside where keyboard.cfg binds the chord ([#2478](https://github.com/openOMSI-org/openOMSI/issues/2478)).
+- Num+ and Num- no longer zoom the outside camera when they are bound (OMSI's file has the kickdown and a door on them); new keys "Zoom in" / "Zoom out" (view_zoom_in, view_zoom_out) ([#2469](https://github.com/openOMSI-org/openOMSI/issues/2469), [#2322](https://github.com/openOMSI-org/openOMSI/issues/2322)).
+- Shift, Ctrl and Alt can be bound on their own, also OMSI's "Shift/Ctrl/Alt (both)" entries ([#2003](https://github.com/openOMSI-org/openOMSI/issues/2003)).
+- A gamepad lying idle no longer pulls the wheel back while the keys steer (the wheel went to and fro) ([#1895](https://github.com/openOMSI-org/openOMSI/issues/1895)).
+- Gamepad steering turns the wheel slower at speed, not only less far ([#2014](https://github.com/openOMSI-org/openOMSI/issues/2014)).
+- Switching cab cameras, the zoom glides to the new camera's along with the view instead of jumping ([#2306](https://github.com/openOMSI-org/openOMSI/issues/2306)).
+- With a wheel the arrow keys switch the cab cameras by default, as in OMSI (the glance stays as a setting) ([#2164](https://github.com/openOMSI-org/openOMSI/issues/2164)).
+- Head tracking turns the view smoothly at every frame, also with a 30 Hz webcam tracker ([#2216](https://github.com/openOMSI-org/openOMSI/issues/2216), [#1983](https://github.com/openOMSI-org/openOMSI/issues/1983)).
+- A turn of the mouse wheel zooming the cab view no longer stops when a switch comes under the cursor ([#1224](https://github.com/openOMSI-org/openOMSI/issues/1224)).
+- AI trains: every car of a train is read and uploaded ahead, so trains (X10 S-Bahn and others) no longer cause half-second stutters when they appear or turn at a terminus ([#2365](https://github.com/openOMSI-org/openOMSI/issues/2365), [#2464](https://github.com/openOMSI-org/openOMSI/issues/2464)).
+- Graphics: when the graphics card runs out of memory, a texture that cannot be made is drawn plain and the game keeps fewer textures, instead of a black picture for the rest of the session ([#2472](https://github.com/openOMSI-org/openOMSI/issues/2472)).
+- Passenger avatars: their pictures are read in the background before anybody is drawn with them, so walking or driving past new people no longer stutters ([#2463](https://github.com/openOMSI-org/openOMSI/issues/2463)).
+- Ticket blocks no longer stay floating over the road after changing or removing the bus, and the cursor shows the hand over them and over the change ([#2340](https://github.com/openOMSI-org/openOMSI/issues/2340), [#2399](https://github.com/openOMSI-org/openOMSI/issues/2399)).
+- A coin of the change on the tray is picked up again with a click, as in OMSI ([#1354](https://github.com/openOMSI-org/openOMSI/issues/1354)).
+- Passengers who get off where there is no pavement walk away from the bus and go instead of standing at the doors ([#1290](https://github.com/openOMSI-org/openOMSI/issues/1290)).
+- Passengers press the stop button in good time also on buses whose doors stay released ([#2346](https://github.com/openOMSI-org/openOMSI/issues/2346)).
+- Passengers get off where the map's stops say they do, also at stops far from the bus ([#1583](https://github.com/openOMSI-org/openOMSI/issues/1583), [#2418](https://github.com/openOMSI-org/openOMSI/issues/2418)).
+- Bus drivers from the map's driver list no longer appear among the passengers ([#2223](https://github.com/openOMSI-org/openOMSI/issues/2223)).
+- Passengers wait at the stops round the camera, so a timetable bus watched along its route takes people on and lets them off at every stop ([#2319](https://github.com/openOMSI-org/openOMSI/issues/2319)).
+- A stop whose object stands at the start of a long bay is served where the bus stops with its doors open: the IBIS, navigator and information bar go back to it ([#2468](https://github.com/openOMSI-org/openOMSI/issues/2468)).
+- The quick menu follows its key in keyboard.cfg (open_menue, Alt by default): moved to another key, Alt no longer opens it ([#2392](https://github.com/openOMSI-org/openOMSI/issues/2392)).
+
 ## 0.2.45 - 2026-10-13
 
 ### New

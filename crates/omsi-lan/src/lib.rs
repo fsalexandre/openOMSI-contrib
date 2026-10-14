@@ -17,6 +17,7 @@ pub mod gateway;
 pub mod host;
 pub mod mirror;
 pub mod mods;
+pub mod passenger;
 pub mod remote;
 pub mod server_cfg;
 pub mod spawn;

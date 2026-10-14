@@ -1194,7 +1194,7 @@ pub fn parse_texchanges(file: &CfgFile) -> Vec<TexChangeMaster> {
                 out.push(TexChangeMaster { texture, variable, entries: Vec::new(), dir: dir.clone() });
             }
             "entries" => {
-                let n = r.usize();
+                let n = r.count();
                 let entries: Vec<String> = (0..n).map(|_| r.str().trim().to_string()).collect();
                 if let Some(m) = out.last_mut() {
                     m.entries = entries;

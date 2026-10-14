@@ -149,6 +149,7 @@ impl VehicleInstance {
         self.driven_km += (self.physics.velocity_kmh() as f64 / 3600.0) * dt as f64;
         self.update_engine_vars(dt);
         crate::timetable_run::apply_pending_destination(self);
+        self.apply_scheme_vars_each_frame();
         let p = self.ty.program.clone();
         self.vm.run_frame(&p, &mut self.state, &mut self.host);
         self.show_radio_text();
@@ -343,6 +344,10 @@ impl VehicleInstance {
         ] {
             self.set_ev(ev, v);
         }
+        // (the paint scheme's [setvar]s first: what another game sends of its own bus, pinned
+        // below, must win over them - its v_font 7 for the Cyrillic font stood reset to the
+        // scheme's 0 here, and its display read Latin in the other players' games)
+        self.apply_scheme_vars_each_frame();
         for &(id, v) in inputs.iter().chain(pinned) {
             self.put(Some(id), v);
         }

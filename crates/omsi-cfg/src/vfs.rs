@@ -137,7 +137,7 @@ impl ZipArchive {
             return Err(bad(format!("{}: central directory out of range", path.display())));
         }
         let cd = archive.read_at(cd_offset, cd_size as usize)?;
-        let mut raw: Vec<(String, ZipEntry, bool)> = Vec::with_capacity(count as usize);
+        let mut raw: Vec<(String, ZipEntry, bool)> = Vec::with_capacity(count.min(cd_size / 46) as usize);
         let mut p = 0usize;
         while p + 46 <= cd.len() && le32(&cd, p) == 0x0201_4b50 {
             let flags = le16(&cd, p + 8);
@@ -197,7 +197,8 @@ impl ZipArchive {
                 continue;
             }
             // the original spelling of every component, for listings
-            let rel: Vec<&str> = name[archive.prefix.len()..].split('/').filter(|c| !c.is_empty() && *c != ".").collect();
+            let Some(rest) = name.get(archive.prefix.len()..).filter(|_| name[..archive.prefix.len()].to_lowercase() == prefix_lower) else { continue };
+            let rel: Vec<&str> = rest.split('/').filter(|c| !c.is_empty() && *c != ".").collect();
             let lower_parts: Vec<&str> = rel_lower.split('/').collect();
             if rel.len() != lower_parts.len() {
                 continue;
@@ -436,7 +437,7 @@ pub fn read(path: &Path) -> io::Result<Vec<u8>> {
     } else {
         match locate(path) {
             Some((m, key)) => m.read(&key),
-            None => std::fs::read(path),
+            None => read_disk_file(path),
         }
     };
     if r.is_ok() {
@@ -495,6 +496,27 @@ pub fn record_reads(on: bool) {
 /// The files read since `record_reads` was switched on.
 pub fn reads() -> Vec<PathBuf> {
     READS.lock().unwrap_or_else(|e| e.into_inner()).iter().flatten().cloned().collect()
+}
+
+fn read_disk_file(path: &Path) -> io::Result<Vec<u8>> {
+    let regular = |md: std::fs::Metadata| {
+        if !md.is_file() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{}: not a regular file", path.display())));
+        }
+        if md.len() > MAX_ENTRY {
+            return Err(bad(format!("{}: too large ({} bytes)", path.display(), md.len())));
+        }
+        Ok(md.len())
+    };
+    regular(std::fs::metadata(path)?)?;
+    let file = std::fs::File::open(path)?;
+    let len = regular(file.metadata()?)?;
+    let mut out = Vec::with_capacity(len as usize);
+    file.take(MAX_ENTRY + 1).read_to_end(&mut out)?;
+    if out.len() as u64 > MAX_ENTRY {
+        return Err(bad(format!("{}: too large", path.display())));
+    }
+    Ok(out)
 }
 
 /// Read a text file with OMSI's encoding rules.
@@ -798,6 +820,48 @@ mod tests {
         // and an archive after it
         let other = crate::resolve_path(&bus, "..\\other\\Y.TXT");
         assert_eq!(read(&other).unwrap(), b"y", "{}", other.display());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_zip64_entry_count_beyond_the_directory_is_not_reserved() {
+        let dir = std::env::temp_dir().join(format!("omsi-cfg-zip64-count-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let zip = dir.join("pack.zip");
+        write_zip(&zip, &[("Vehicles/Bus/bus.bus", b"bus".to_vec(), false)]);
+        let mut bytes = std::fs::read(&zip).unwrap();
+        let eocd = bytes.split_off(bytes.len() - 22);
+        let cd_size = le32(&eocd, 12) as u64;
+        let cd_offset = le32(&eocd, 16) as u64;
+        let record_at = bytes.len() as u64;
+        bytes.extend_from_slice(&0x0606_4b50u32.to_le_bytes());
+        bytes.extend_from_slice(&44u64.to_le_bytes());
+        bytes.extend_from_slice(&[45, 0, 45, 0]);
+        bytes.extend_from_slice(&[0; 8]);
+        bytes.extend_from_slice(&(1u64 << 40).to_le_bytes());
+        bytes.extend_from_slice(&(1u64 << 40).to_le_bytes());
+        bytes.extend_from_slice(&cd_size.to_le_bytes());
+        bytes.extend_from_slice(&cd_offset.to_le_bytes());
+        bytes.extend_from_slice(&0x0706_4b50u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&record_at.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&eocd);
+        std::fs::write(&zip, bytes).unwrap();
+        let archive = ZipArchive::open(&zip).unwrap();
+        assert!(archive.read("vehicles/bus/bus.bus").is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_prefix_spelled_with_other_bytes_does_not_split_a_name() {
+        let dir = std::env::temp_dir().join(format!("omsi-cfg-zip-kelvin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let zip = dir.join("pack.zip");
+        write_zip(&zip, &[("k/Vehicles/a.bus", b"a".to_vec(), false), ("\u{212A}/Vehicles/b.bus", b"b".to_vec(), false)]);
+        let archive = ZipArchive::open(&zip).unwrap();
+        assert_eq!(archive.prefix(), "k/");
+        assert!(archive.read("vehicles/a.bus").is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -14,7 +14,7 @@ use super::pieces;
 use super::store::Store;
 use super::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::{BufRead, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -885,7 +885,7 @@ fn fetch_pieces(m: &VehicleManifest, todo: &[usize], host: std::net::SocketAddr,
             out.flush().map_err(|e| format!("{}: {e}", super::CONNECTION_LOST))?;
             if std::mem::take(&mut asked_zstd) {
                 let mut line = String::new();
-                input.read_line(&mut line).map_err(|e| format!("{}: {e}", super::CONNECTION_LOST))?;
+                super::read_line_within(&mut input, &mut line, super::MAX_REPLY).map_err(|e| format!("{}: {e}", super::CONNECTION_LOST))?;
             }
             for (k, i) in &batch {
                 let e = &m.entries[*k];
@@ -1146,8 +1146,8 @@ mod tests {
     /// A host that answers MANIFEST with `list`, and BLOB and PIECE from `files` (by
     /// SHA-256), on the encrypted mods connection - a host with a store of its own, apart from
     /// this test's.
-    fn host(session: u64, list: VehicleManifest, files: HashMap<String, Vec<u8>>) -> SocketAddr {
-        host_of(session, list, files, Version::Zstd, None)
+    fn host(key: std::sync::Arc<omsi_net::hostkey::HostKey>, list: VehicleManifest, files: HashMap<String, Vec<u8>>) -> SocketAddr {
+        host_of(key, list, files, Version::Zstd, None)
     }
 
     /// What a host of each version sends.
@@ -1166,13 +1166,14 @@ mod tests {
 
     /// `host`, of `version`; one that breaks the connection after `cut` pieces (counted
     /// over all its connections) when told.
-    fn host_of(session: u64, list: VehicleManifest, files: HashMap<String, Vec<u8>>, version: Version, cut: Option<usize>) -> SocketAddr {
+    fn host_of(key: std::sync::Arc<omsi_net::hostkey::HostKey>, list: VehicleManifest, files: HashMap<String, Vec<u8>>, version: Version, cut: Option<usize>) -> SocketAddr {
+        let session = key.session();
         let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let (list, files, served) = (list.clone(), files.clone(), served.clone());
+                let (list, files, served, key) = (list.clone(), files.clone(), served.clone(), key.clone());
                 std::thread::spawn(move || -> std::io::Result<()> {
                     let mut out = stream.try_clone()?;
                     let mut input = BufReader::new(stream);
@@ -1181,7 +1182,8 @@ mod tests {
                     let hello: Vec<&str> = line.split_whitespace().collect();
                     assert_eq!(hello[0], MAGIC);
                     let keys = Handshake::new()?;
-                    writeln!(out, "OK {}", keys.public_hex())?;
+                    // (with the proof that this host runs the session, as a host greets)
+                    writeln!(out, "OK {} {}", keys.public_hex(), super::super::channel::prove(&key, hello[2], &keys.public_hex()))?;
                     let (send, receive) = keys.finish(session, false, hello[2])?;
                     let mut out = SecureWriter::new(out, send);
                     let mut input = SecureReader::new(input, receive);
@@ -1392,8 +1394,9 @@ mod tests {
         let mine = b"[item]\nSkin B\nfarbschema\nskin_b.dds\n".to_vec();
         std::fs::write(mine_dir.join("repaints.cti"), &mine).unwrap();
         omsi_cfg::add_content_root(mine_root.clone());
-        let session = 0xc71;
-        super::super::upload::remember_host(host(session, m.clone(), files), session);
+        let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
+        let session = key.session();
+        super::super::upload::remember_host(host(key.clone(), m.clone(), files), session);
         fetch(&fp).unwrap();
         // the other's bus, as itself: its paint file, its skin
         let at = bus_file(&fp).unwrap();
@@ -1437,13 +1440,14 @@ mod tests {
         let all: usize = m.entries.iter().map(|e| pieces::count(e.size) as usize).sum();
         assert_eq!(all, 6);
         // the line breaks after 3 pieces
-        let session = 0x5e7;
-        super::super::upload::remember_host(host_of(session, m.clone(), files.clone(), Version::Zlib, Some(3)), session);
+        let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
+        let session = key.session();
+        super::super::upload::remember_host(host_of(key.clone(), m.clone(), files.clone(), Version::Zlib, Some(3)), session);
         assert!(fetch(&fp).is_err());
         let kept: usize = m.entries.iter().map(|e| pieces::count(e.size) as usize - missing_pieces(e).len()).sum();
         assert_eq!(kept, 3, "the pieces that came are kept");
         // again: a host that serves only as many pieces as are left is enough
-        super::super::upload::remember_host(host_of(session, m.clone(), files.clone(), Version::Zstd, Some(all - kept)), session);
+        super::super::upload::remember_host(host_of(key.clone(), m.clone(), files.clone(), Version::Zstd, Some(all - kept)), session);
         fetch(&fp).unwrap();
         let at = bus_file(&fp).unwrap();
         assert_eq!(omsi_cfg::vfs::read(&omsi_cfg::resolve_path(at.parent().unwrap(), "texture/big.dat")).unwrap(), big);
@@ -1466,8 +1470,9 @@ mod tests {
         let mut bad = tex.clone();
         bad[pieces::PIECE as usize + 7] ^= 0x40;
         let tampered: HashMap<String, Vec<u8>> = [(super::super::sha256_of(&bus), bus.clone()), (super::super::sha256_of(&tex), bad)].into_iter().collect();
-        let session = 0x7a3;
-        super::super::upload::remember_host(host(session, m.clone(), tampered), session);
+        let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
+        let session = key.session();
+        super::super::upload::remember_host(host(key.clone(), m.clone(), tampered), session);
         let why = fetch(&fp).unwrap_err();
         assert!(why.contains("not the file the list names"), "{why}");
         assert!(bus_file(&fp).is_none(), "no bus made of a file that is not its own");
@@ -1475,7 +1480,7 @@ mod tests {
         // from an honest host it comes as it is
         let good: HashMap<String, Vec<u8>> = [&bus, &tex].into_iter().map(|d| (super::super::sha256_of(d), d.clone())).collect();
         let before = SENT_ZSTD.load(std::sync::atomic::Ordering::SeqCst);
-        super::super::upload::remember_host(host(session, m.clone(), good), session);
+        super::super::upload::remember_host(host(key.clone(), m.clone(), good), session);
         fetch(&fp).unwrap();
         assert!(SENT_ZSTD.load(std::sync::atomic::Ordering::SeqCst) > before, "the pieces came packed with zstd");
         let at = bus_file(&fp).unwrap();
@@ -1501,8 +1506,9 @@ mod tests {
         .unwrap();
         let fp = m.fingerprint();
         let files: HashMap<String, Vec<u8>> = [&bus, &cfg, &font].into_iter().map(|d| (super::super::sha256_of(d), d.clone())).collect();
-        let session = 0x4e1;
-        super::super::upload::remember_host(host(session, m.clone(), files), session);
+        let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
+        let session = key.session();
+        super::super::upload::remember_host(host(key.clone(), m.clone(), files), session);
         fetch(&fp).unwrap();
         let at = bus_file(&fp).unwrap();
         assert_eq!(omsi_cfg::vfs::read(&omsi_cfg::resolve_path(at.parent().unwrap(), "model/model.cfg")).unwrap(), cfg);
@@ -1612,8 +1618,9 @@ mod tests {
         let m = VehicleManifest { bus: "Vehicles/OldHostBus/o.bus".into(), entries: vec![entry("Vehicles/OldHostBus/o.bus", &bus), entry("Vehicles/OldHostBus/texture/t.dat", &tex)] }.validated().unwrap();
         let fp = m.fingerprint();
         let files: HashMap<String, Vec<u8>> = [&bus, &tex].into_iter().map(|d| (super::super::sha256_of(d), d.clone())).collect();
-        let session = 0x01d;
-        super::super::upload::remember_host(host_of(session, m.clone(), files, Version::Blobs, None), session);
+        let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
+        let session = key.session();
+        super::super::upload::remember_host(host_of(key.clone(), m.clone(), files, Version::Blobs, None), session);
         fetch(&fp).unwrap();
         let at = bus_file(&fp).unwrap();
         assert_eq!(omsi_cfg::vfs::read(&omsi_cfg::resolve_path(at.parent().unwrap(), "texture/t.dat")).unwrap(), tex);
@@ -1630,24 +1637,27 @@ mod tests {
         let m = VehicleManifest { bus: "Vehicles/FetchBus/f.bus".into(), entries: vec![entry("Vehicles/FetchBus/f.bus", &bus), entry("Vehicles/FetchBus/texture/t.dat", &tex)] }.validated().unwrap();
         let fp = m.fingerprint();
         let files: HashMap<String, Vec<u8>> = [(super::super::sha256_of(&bus), bus.clone()), (super::super::sha256_of(&tex), tex.clone())].into_iter().collect();
-        let session = 0xfe7c;
-        super::super::upload::remember_host(host(session, m.clone(), files.clone()), session);
+        let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
+        let session = key.session();
+        super::super::upload::remember_host(host(key.clone(), m.clone(), files.clone()), session);
         // fetched, kept under its fingerprint, and mounted on its own
         fetch(&fp).unwrap();
         let bus_file = bus_file(&fp).unwrap();
         assert_eq!(omsi_cfg::vfs::read(&omsi_cfg::resolve_path(bus_file.parent().unwrap(), "texture/t.dat")).unwrap(), tex);
         // a host that passes off another bus under that fingerprint is not believed
         let other = VehicleManifest { bus: m.bus.clone(), entries: vec![entry("Vehicles/FetchBus/f.bus", &bus), entry("Vehicles/FetchBus/texture/t.dat", b"x")] }.validated().unwrap();
-        let session = 0xfe7d;
-        super::super::upload::remember_host(host(session, other.clone(), files.clone()), session);
+        let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
+        let session = key.session();
+        super::super::upload::remember_host(host(key.clone(), other.clone(), files.clone()), session);
         assert!(fetch(&format!("v1-{}", "1".repeat(64))).unwrap_err().contains("another bus"));
         // nor one whose file is not the one its list names
         let mut bad_files = files.clone();
         let tex2 = vec![6u8; 200_000];
         let m2 = VehicleManifest { bus: m.bus.clone(), entries: vec![entry("Vehicles/FetchBus/f.bus", &bus), entry("Vehicles/FetchBus/texture/t.dat", &tex2)] }.validated().unwrap();
         bad_files.insert(super::super::sha256_of(&tex2), vec![9u8; 200_000]);
-        let session = 0xfe7e;
-        super::super::upload::remember_host(host(session, m2.clone(), bad_files), session);
+        let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
+        let session = key.session();
+        super::super::upload::remember_host(host(key.clone(), m2.clone(), bad_files), session);
         assert!(fetch(&m2.fingerprint()).unwrap_err().contains("not the file the list names"));
         assert!(manifest(&m2.fingerprint()).is_none(), "a bus that did not come whole is not kept");
         let _ = std::fs::remove_dir_all(&store);

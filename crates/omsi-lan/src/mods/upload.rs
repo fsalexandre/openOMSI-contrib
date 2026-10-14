@@ -1282,7 +1282,8 @@ mod tests {
     #[test]
     fn an_upload_that_broke_off_goes_on_where_it_stopped() {
         let _turn = super::super::vehicles::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let session = 0xb07;
+        let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
+        let session = key.session();
         let store_dir = temp("resume-up-store");
         super::super::vehicles::open_for_test(&store_dir);
         accept(true);
@@ -1293,8 +1294,8 @@ mod tests {
             let ready = ready.clone();
             std::thread::spawn(move || {
                 for s in listener.incoming().flatten() {
-                    let ready = ready.clone();
-                    std::thread::spawn(move || super::super::handle(s, session, &ready));
+                    let (ready, key) = (ready.clone(), key.clone());
+                    std::thread::spawn(move || super::super::handle(s, &key, &ready));
                 }
             });
         }
@@ -1354,7 +1355,8 @@ mod tests {
     #[test]
     fn a_file_the_bus_has_twice_never_ends_the_upload() {
         let _turn = super::super::vehicles::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let session = 0xd0b;
+        let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
+        let session = key.session();
         let store_dir = temp("twice-store");
         super::super::vehicles::open_for_test(&store_dir);
         accept(true);
@@ -1365,8 +1367,8 @@ mod tests {
             let ready = ready.clone();
             std::thread::spawn(move || {
                 for s in listener.incoming().flatten() {
-                    let ready = ready.clone();
-                    std::thread::spawn(move || super::super::handle(s, session, &ready));
+                    let (ready, key) = (ready.clone(), key.clone());
+                    std::thread::spawn(move || super::super::handle(s, &key, &ready));
                 }
             });
         }
@@ -1421,7 +1423,8 @@ mod tests {
     #[test]
     fn two_versions_of_a_bus_are_kept_side_by_side_by_their_content() {
         let _turn = super::super::vehicles::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let session = 0xb05;
+        let key = std::sync::Arc::new(omsi_net::hostkey::HostKey::generate().unwrap());
+        let session = key.session();
         let store_dir = temp("store");
         super::super::vehicles::open_for_test(&store_dir);
         accept(true);
@@ -1432,8 +1435,8 @@ mod tests {
             let ready = ready.clone();
             std::thread::spawn(move || {
                 for s in listener.incoming().flatten() {
-                    let ready = ready.clone();
-                    std::thread::spawn(move || super::super::handle(s, session, &ready));
+                    let (ready, key) = (ready.clone(), key.clone());
+                    std::thread::spawn(move || super::super::handle(s, &key, &ready));
                 }
             });
         }

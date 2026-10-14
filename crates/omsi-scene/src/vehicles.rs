@@ -847,14 +847,13 @@ impl World {
         scheme: Option<usize>,
         player: bool,
     ) -> VehicleSet {
-        let mut dirs = vt.texture_dirs(&self.root);
-        let (subst, scheme_dir) = match scheme {
+        let dirs = vt.texture_dirs(&self.root);
+        // (the scheme's pictures come named in full by the substitutions; its folder is
+        // not searched for the model's other textures, see `scheme_substitutions`)
+        let (subst, _scheme_dir) = match scheme {
             Some(i) => vt.scheme_substitutions(i),
             None => (vt.default_substitutions(&self.root), None),
         };
-        if let Some(d) = scheme_dir {
-            dirs.insert(0, d);
-        }
         let dirs_ref: Vec<&Path> = dirs.iter().map(|p| p.as_path()).collect();
         let tex_ids = self.vehicle_textures.lock();
         let mut mesh_ids = self.vehicle_meshes.lock();

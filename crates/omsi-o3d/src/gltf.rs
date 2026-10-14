@@ -5,7 +5,7 @@
 use crate::import::{base64, embedded_texture, from_rh, percent_decode, texture_name, Builder};
 use crate::{Bone, BoneWeight, Joint, Material, Mesh, Morph, O3dError};
 use glam::{Mat4, Vec2, Vec3};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 fn err(e: impl std::fmt::Display) -> O3dError {
@@ -59,19 +59,7 @@ pub fn parse_glb_or_gltf(bytes: &[u8], path: &Path) -> Result<Mesh, O3dError> {
         Some(s) => s.nodes().collect(),
         None => gltf.nodes().collect(),
     };
-    let mut world: HashMap<usize, Mat4> = HashMap::new();
-    let mut parent: HashMap<usize, usize> = HashMap::new();
-    let mut stack: Vec<(::gltf::Node, Mat4)> = roots.into_iter().map(|n| (n, Mat4::IDENTITY)).collect();
-    let mut order: Vec<::gltf::Node> = Vec::new();
-    while let Some((node, up)) = stack.pop() {
-        let w = up * Mat4::from_cols_array_2d(&node.transform().matrix());
-        world.insert(node.index(), w);
-        for c in node.children() {
-            parent.insert(c.index(), node.index());
-            stack.push((c, w));
-        }
-        order.push(node);
-    }
+    let (world, parent, order) = walk(roots);
     let mut missing_normals: Vec<bool> = Vec::new();
     let mut bones: HashMap<String, Vec<BoneWeight>> = HashMap::new();
     let mut bone_order: Vec<String> = Vec::new();
@@ -126,11 +114,11 @@ pub fn parse_glb_or_gltf(bytes: &[u8], path: &Path) -> Result<Mesh, O3dError> {
                 missing_normals.push(nor.get(i).is_none());
             }
             for t in idx.chunks_exact(3) {
-                b.triangle(base + t[0], base + t[1], base + t[2], material);
+                b.triangle(base.saturating_add(t[0]), base.saturating_add(t[1]), base.saturating_add(t[2]), material);
             }
             // skin weights, per joint name
             if let (Some(js), Some(ws)) = (r.read_joints(0), r.read_weights(0)) {
-                for (v, (j, w)) in js.into_u16().zip(ws.into_f32()).enumerate() {
+                for (v, (j, w)) in js.into_u16().zip(ws.into_f32()).take(pos.len()).enumerate() {
                     for k in 0..4 {
                         if w[k] <= 0.0 {
                             continue;
@@ -187,6 +175,31 @@ pub fn parse_glb_or_gltf(bytes: &[u8], path: &Path) -> Result<Mesh, O3dError> {
         return Err(err("no triangles in the file"));
     }
     Ok(b.finish())
+}
+
+type Walk<'a> = (HashMap<usize, Mat4>, HashMap<usize, usize>, Vec<::gltf::Node<'a>>);
+
+fn walk(roots: Vec<::gltf::Node<'_>>) -> Walk<'_> {
+    let mut world: HashMap<usize, Mat4> = HashMap::new();
+    let mut parent: HashMap<usize, usize> = HashMap::new();
+    let mut stack: Vec<(::gltf::Node, Mat4, Option<usize>)> = roots.into_iter().map(|n| (n, Mat4::IDENTITY, None)).collect();
+    let mut order: Vec<::gltf::Node> = Vec::new();
+    let mut seen: HashSet<usize> = HashSet::new();
+    while let Some((node, up, from)) = stack.pop() {
+        if !seen.insert(node.index()) {
+            continue;
+        }
+        if let Some(from) = from {
+            parent.insert(node.index(), from);
+        }
+        let w = up * Mat4::from_cols_array_2d(&node.transform().matrix());
+        world.insert(node.index(), w);
+        for c in node.children() {
+            stack.push((c, w, Some(node.index())));
+        }
+        order.push(node);
+    }
+    (world, parent, order)
 }
 
 /// The bytes a buffer or picture URI names: a `data:` URI's own, or a file beside the model.
@@ -254,6 +267,33 @@ mod tests {
         let p = dir.join("tri.gltf");
         std::fs::write(&p, json).unwrap();
         p
+    }
+
+    #[test]
+    fn a_node_that_lists_itself_or_shares_children_is_walked_once() {
+        let json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"children":[0,1,1]},{"children":[0,1]}]}"#;
+        let e = parse_glb_or_gltf(json, Path::new("loop.gltf")).unwrap_err();
+        assert!(e.to_string().contains("no triangles"), "{e}");
+    }
+
+    #[test]
+    fn joint_parents_never_loop_back() {
+        let json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"children":[0,1]},{"children":[0,1,2]},{}]}"#;
+        let g = ::gltf::Gltf::from_slice(json).unwrap();
+        let (_, parent, order) = walk(g.scenes().next().unwrap().nodes().collect());
+        assert_eq!(order.len(), 3);
+        for start in 0..3 {
+            let mut at = start;
+            let mut steps = 0;
+            while let Some(&p) = parent.get(&at) {
+                at = p;
+                steps += 1;
+                assert!(steps <= 3, "a loop from node {start}");
+            }
+        }
+        assert_eq!(parent.get(&0), None);
+        assert_eq!(parent.get(&1), Some(&0));
+        assert_eq!(parent.get(&2), Some(&1));
     }
 
     #[test]

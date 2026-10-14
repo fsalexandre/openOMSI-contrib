@@ -277,11 +277,15 @@ pub fn agent() -> ureq::Agent {
     // (a read waits 30 s at most - a stalled download goes on with a range request, so a
     // short wait costs nothing; the connection gets 20 s, enough for a slow line or a
     // resolver that tries IPv6 first)
-    ureq::AgentBuilder::new()
+    let b = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(20))
         .timeout_read(std::time::Duration::from_secs(30))
-        .user_agent(&format!("openOMSI/{} (updater)", current_version()))
-        .build()
+        .user_agent(&format!("openOMSI/{} (updater)", current_version()));
+    // (through the proxy the system is set to use, #1000)
+    match crate::proxy::system_proxy().and_then(|p| ureq::Proxy::new(&p).map_err(|e| log::warn!("network: the proxy {p} cannot be used: {e}")).ok()) {
+        Some(proxy) => b.proxy(proxy).build(),
+        None => b.build(),
+    }
 }
 
 /// How often a request is tried before it counts as failed, and the pauses between.
@@ -485,9 +489,16 @@ pub fn downloaded(r: &Release) -> bool {
         (Some(want), got) if got == want => true,
         (Some(want), "-") => {
             let Ok(mut f) = std::fs::File::open(&file) else { return false };
+            // (read in blocks: sha2 0.11's hasher is no `io::Write` any more)
             let mut h = sha2::Sha256::new();
-            if std::io::copy(&mut f, &mut h).is_err() {
-                return false;
+            let mut buf = vec![0u8; 1 << 16];
+            loop {
+                match std::io::Read::read(&mut f, &mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => h.update(&buf[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => return false,
+                }
             }
             let got: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
             got == want

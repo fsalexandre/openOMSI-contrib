@@ -34,6 +34,8 @@ pub mod radio;
 pub mod panic_guard;
 pub mod vfs;
 pub mod install_search;
+mod walk;
+use walk::{pop_within, resolve_existing};
 pub use install_search::find_original_install;
 pub use number::{parse_f32, parse_f64, parse_i32, parse_i64};
 pub use vfs::{add_content_zip, mount_zip};
@@ -367,6 +369,11 @@ impl<'a> CfgReader<'a> {
         parse_i64(self.line()).max(0) as usize
     }
 
+    pub fn count(&mut self) -> usize {
+        let n = self.usize();
+        n.min(self.file.lines.len().saturating_sub(self.pos))
+    }
+
     /// `1`/`true` → true; anything else false.
     pub fn bool(&mut self) -> bool {
         let w = self.word();
@@ -440,11 +447,14 @@ pub fn windows_components(rel: &str) -> Vec<&str> {
     let n = parts.len();
     let mut out = Vec::with_capacity(n);
     for (i, c) in parts.into_iter().enumerate() {
-        if c.is_empty() || c == "." {
+        if c.is_empty() || c == "." || c.contains(':') {
             continue;
         }
         if c == ".." {
             out.push(c);
+            continue;
+        }
+        if c.trim_matches(['.', ' ']).is_empty() {
             continue;
         }
         // a path ending in a separator has an empty last part, so its last folder counts
@@ -705,33 +715,6 @@ fn mirrored_base(base: &Path, root: &Path, roots: &[PathBuf]) -> Option<PathBuf>
     })
 }
 
-/// Case-insensitive walk of the components `rel` from `base` using the cached directory
-/// listings only; None as soon as a component does not exist.
-fn resolve_existing(base: &Path, rel: &[&str]) -> Option<PathBuf> {
-    let mut cur = base.to_path_buf();
-    for (i, comp) in rel.iter().enumerate() {
-        if comp.is_empty() || *comp == "." {
-            continue;
-        }
-        if *comp == ".." {
-            cur.pop();
-            continue;
-        }
-        let names = candidates_in_dir(&cur, comp);
-        if names.len() < 2 {
-            cur = cur.join(names.into_iter().next()?);
-            continue;
-        }
-        // Two names differing in case alone, on a case-sensitive file system: the folder
-        // meant is whichever one holds the rest of the path. An add-on unpacked beside the
-        // original folders leaves a `Maps` with the new map next to the `maps` holding all
-        // the others; both have to stay reachable.
-        let rest = &rel[i + 1..];
-        return names.iter().find_map(|n| resolve_existing(&cur.join(n), rest));
-    }
-    Some(cur)
-}
-
 /// The vehicle pack (`Vehicles/<folder>`, relative to its root) that `rel` from `base` lands
 /// in, when it does: the files of one vehicle refer to each other relative to its folder.
 fn vehicle_package(base: &Path, owner: &Path, rel: &[&str]) -> Option<String> {
@@ -854,7 +837,8 @@ pub fn resolve_path(base: &Path, rel: &str) -> PathBuf {
     // a mod's copy first: the same place under a content root of higher priority than the
     // one `base` belongs to
     let roots = content_roots();
-    let owner = if roots.len() > 1 { owner_root(base, &roots).cloned() } else { None };
+    let floor = owner_root(base, &roots).cloned();
+    let owner = floor.clone().filter(|_| roots.len() > 1);
     if let Some(owner) = &owner {
         let package = vehicle_package(base, owner, rel);
         for r in roots.iter().take_while(|r| *r != owner) {
@@ -875,7 +859,7 @@ pub fn resolve_path(base: &Path, rel: &str) -> PathBuf {
     let mut cur = base.to_path_buf();
     for comp in rel {
         if *comp == ".." {
-            cur.pop();
+            pop_within(&mut cur, floor.as_deref());
             continue;
         }
         // the folder's listing, kept from the first time, has the name spelled just so:
@@ -1405,6 +1389,7 @@ mod tests {
         assert_eq!(windows_components("Folder.\\"), vec!["Folder"]);
         assert_eq!(windows_components("str_gehweg02.bmp "), vec!["str_gehweg02.bmp"]);
         assert_eq!(windows_components(""), Vec::<&str>::new());
+        assert_eq!(windows_components("a\\.. \\...\\. .\\b.bmp"), vec!["a", "b.bmp"]);
         let dir = std::env::temp_dir().join(format!("omsi-cfg-paths-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("Texture").join("Bahn\u{fc}bergang")).unwrap();
         std::fs::write(dir.join("Texture").join("Bahn\u{fc}bergang").join("anz-oben.jpg"), b"x").unwrap();

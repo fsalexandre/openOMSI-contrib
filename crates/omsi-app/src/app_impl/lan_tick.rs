@@ -79,9 +79,15 @@ impl App {
         let my_id = lan.my_id;
         if let Some(ev) = text.strip_prefix("trigger ") {
             // a switch worked by a passenger of ours: only by one who is in our bus
-            let aboard = lan.peers().find(|p| p.pose.id == from).and_then(|p| p.pose.walker).and_then(|w| w.aboard).map(|a| a.owner == my_id).unwrap_or(false);
-            if !aboard {
-                log::info!("LAN: player {from} asked for switch {ev} of our bus from outside it: ignored");
+            let walker = lan.peers().find(|p| p.pose.id == from).and_then(|p| p.pose.walker);
+            let aboard = walker.and_then(|w| w.aboard).filter(|a| a.owner == my_id);
+            let inside = match (aboard, self.player.as_ref()) {
+                (Some(a), Some(p)) => omsi_lan::passenger::inside(&omsi_lan::spawn::footprint_of(&p.vehicle, omsi_lan::spawn::BUS_BOX), a.local),
+                _ => false,
+            };
+            let aboard = aboard.is_some();
+            if !aboard || !inside || !omsi_lan::passenger::passenger_trigger(ev) {
+                log::info!("LAN: player {from} asked for switch {ev} of our bus from outside it, or for one only the driver works: ignored");
                 return;
             }
             if let Some(p) = self.player.as_mut() {
