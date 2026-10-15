@@ -132,7 +132,7 @@ impl Sender {
             }
             Err(e) => {
                 log::warn!("uploads: {bus}: {e}");
-                show(format!("Your bus could not be sent to the server ({e}): the others see a box of its size"), 0, 0, false);
+                show(format!("Your bus could not be sent to the server ({e}): the others see a stand-in in its place"), 0, 0, false);
             }
         }
     }
