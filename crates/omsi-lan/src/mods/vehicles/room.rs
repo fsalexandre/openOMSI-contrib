@@ -75,6 +75,11 @@ impl Buses {
     /// `m` held against a collection while it is being sent (`Lease`).
     pub(super) fn lease(&self, m: &VehicleManifest) -> Lease<'_> {
         let shas: Vec<String> = m.entries.iter().map(|e| e.sha256.to_ascii_lowercase()).chain(std::iter::once(m.fingerprint())).collect();
+        // (taken with the store held, in the order a collection takes them - store, then
+        // leases: a collection under way finishes first, and one that comes after sees the
+        // lease. Taken beside it, a collection could pass a file by as unleased and drop it
+        // while the upload was being told the server has it.)
+        let _store = self.lock();
         let mut map = self.leases();
         for s in &shas {
             *map.entry(s.clone()).or_insert(0) += 1;

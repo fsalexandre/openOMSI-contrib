@@ -195,6 +195,16 @@ impl Incoming {
         if adopted > 0 {
             log::info!("uploads: {adopted} files of {} are the server's own, not sent", m.bus);
         }
+        // a server that offers only some buses (`vehicles` of server.cfg) takes them as it has
+        // them itself: the list matched their path, never their content, and with uploads on
+        // any content came in under an allowed name. A version that needs a file sent is
+        // another bus: refused (its driver is drawn with the server's copy, labelled).
+        if !wanted.is_empty() && crate::server_cfg::SERVER_VEHICLES.get().is_some_and(|l| !l.is_empty()) {
+            self.lease = None;
+            self.held = None;
+            log::info!("uploads: {} is another version of a bus this server offers: refused", m.bus);
+            return Ok(Err("this server offers its own copies of its buses only".into()));
+        }
         let bytes: u64 = wanted.iter().map(|k| m.entries[*k].size).sum();
         log::info!("uploads: a player offers {} ({} files): {} wanted ({:.1} MB)", m.bus, m.entries.len(), wanted.len(), bytes as f64 / 1e6);
         self.wanted = wanted.iter().copied().collect();

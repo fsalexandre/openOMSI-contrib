@@ -142,7 +142,7 @@ impl Store {
     pub(crate) fn put(&self, e: &Entry, data: &[u8]) -> std::io::Result<SealedFile> {
         let f = self.file(e);
         let sealed = omsi_cfg::vfs::seal(&self.key, &f.aad, data)?;
-        let tmp = f.blob.with_extension("part");
+        let tmp = temp_of(&f.blob, "part");
         std::fs::write(&tmp, sealed).and_then(|_| std::fs::rename(&tmp, &f.blob))?;
         Ok(f)
     }
@@ -164,7 +164,7 @@ impl Store {
     pub(crate) fn put_piece(&self, sha: &str, i: u64, data: &[u8]) -> std::io::Result<()> {
         let (path, aad) = self.piece_file(sha, i);
         let sealed = omsi_cfg::vfs::seal(&self.key, &aad, data)?;
-        let tmp = path.with_extension("partpiece");
+        let tmp = temp_of(&path, "partpiece");
         std::fs::write(&tmp, sealed).and_then(|_| std::fs::rename(&tmp, &path))
     }
 
@@ -200,7 +200,7 @@ impl Store {
         data.push(codec as u8);
         data.extend_from_slice(wire);
         let sealed = omsi_cfg::vfs::seal(&self.key, &aad, &data)?;
-        let tmp = path.with_extension("partpiece");
+        let tmp = temp_of(&path, "partpiece");
         std::fs::write(&tmp, sealed).and_then(|_| std::fs::rename(&tmp, &path))
     }
 
@@ -259,6 +259,17 @@ impl Store {
             .filter(|e| e.path().extension().is_some_and(|x| x == PIECE || x == "partpiece") && old(e) && std::fs::remove_file(e.path()).is_ok())
             .count()
     }
+}
+
+/// Where a file of the store is written before it takes its name: a name of its own for each
+/// write (`<name>.<pid>-<n>.<ext>`). Two connections putting the same file at once - the same
+/// texture of two buses, or one bus sent twice - wrote into one temporary file and could
+/// leave it mixed. The extension stays, so what is left of a write that broke off is still
+/// cleared as before.
+fn temp_of(path: &Path, ext: &str) -> PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    path.with_extension(format!("{}-{n}.{ext}", std::process::id()))
 }
 
 /// What a game before the encryption kept in the store: the plain files, named by their

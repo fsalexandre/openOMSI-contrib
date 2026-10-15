@@ -337,16 +337,8 @@ pub fn query(target: &str, with_icon: bool) -> Result<ServerInfo, String> {
     Ok(info)
 }
 
-/// Connections the gateway serves at once - players, status requests and mod streams
-/// together: only a ceiling against a flood (the mod streams have their own, `MAX_TUNNELS`;
-/// one source has its own, `PER_SOURCE`). A new bus among 16 players is ~110 at once.
-const MAX_CONNECTIONS: usize = 512;
-
-/// Mod streams (`/tcp`) carried at once; one more is told the mods server's `ERR busy` and
-/// its game asks again in a moment. A player's own session never waits for these: with 64
-/// for everything, fifteen players fetching a new player's bus (a list and four pieces
-/// each) took every place, and one more player could not join at all.
-const MAX_TUNNELS: usize = if cfg!(test) { 3 } else { 160 };
+/// Connections the gateway serves at once (players, status requests, mod streams).
+const MAX_CONNECTIONS: usize = 64;
 const PER_SOURCE: usize = 16;
 const HEAD_WAIT: Duration = Duration::from_secs(3);
 const DATAGRAM_LIMIT: usize = 4096;
@@ -442,7 +434,6 @@ impl WsGateway {
         std::thread::Builder::new().name("ws gateway".into()).spawn(move || {
             // connections served at once (each its own thread): more are closed at once
             let open = Arc::new(AtomicUsize::new(0));
-            let tunnels = Arc::new(AtomicUsize::new(0));
             let sources = Arc::new(Sources::default());
             while !st.load(Ordering::Relaxed) {
                 match listener.accept() {
@@ -465,9 +456,9 @@ impl WsGateway {
                             }
                         };
                         open.fetch_add(1, Ordering::Relaxed);
-                        let (st, inf, conn, held, src, tun) = (st.clone(), inf.clone(), conn.clone(), open.clone(), sources.clone(), tunnels.clone());
+                        let (st, inf, conn, held, src) = (st.clone(), inf.clone(), conn.clone(), open.clone(), sources.clone());
                         let spawned = std::thread::Builder::new().name("ws player".into()).spawn(move || {
-                            if let Err(e) = serve(stream, slot, target, &inf, &st, &conn, &src, &tun) {
+                            if let Err(e) = serve(stream, slot, target, &inf, &st, &conn, &src) {
                                 log::debug!("ws gateway: {peer}: {e}");
                             }
                             held.fetch_sub(1, Ordering::Relaxed);
@@ -584,7 +575,7 @@ pub fn local_admin(request: &[u8], peer: Option<SocketAddr>, info: &Mutex<Server
 }
 
 /// One TCP connection to the gateway: a status request, the icon, or a player's WebSocket.
-fn serve(stream: TcpStream, slot: Option<SourceSlot>, target: SocketAddr, info: &Mutex<ServerInfo>, stop: &AtomicBool, connected: &AtomicUsize, sources: &Arc<Sources>, tunnels: &AtomicUsize) -> Result<(), String> {
+fn serve(stream: TcpStream, slot: Option<SourceSlot>, target: SocketAddr, info: &Mutex<ServerInfo>, stop: &AtomicBool, connected: &AtomicUsize, sources: &Arc<Sources>) -> Result<(), String> {
     let peer = stream.peer_addr().ok();
     stream.set_nonblocking(false).map_err(|e| e.to_string())?;
     stream.set_read_timeout(Some(HEAD_WAIT)).map_err(|e| e.to_string())?;
@@ -646,23 +637,10 @@ fn serve(stream: TcpStream, slot: Option<SourceSlot>, target: SocketAddr, info: 
         // a byte stream to the session's TCP port (the host's mods): the way the files go
         // where only HTTP gets through
         let mut ws = tungstenite::accept_with_config(stream, Some(stream_config())).map_err(|e| e.to_string())?;
-        if tunnels.fetch_add(1, Ordering::Relaxed) >= MAX_TUNNELS {
-            tunnels.fetch_sub(1, Ordering::Relaxed);
-            log::info!("ws gateway: {MAX_TUNNELS} mod streams open already; one more told to come back");
-            // (what the mods server says when it has no place: the game knows to ask again)
-            let _ = ws.send(Message::Binary(b"ERR busy\n".to_vec().into()));
-            let _ = ws.close(None);
-            let _ = ws.flush();
-            return Ok(());
-        }
-        let r = (|| {
-            // (the 10 s of the request's read held every chunk that long)
-            ws.get_mut().set_read_timeout(Some(Duration::from_millis(5))).map_err(|e| e.to_string())?;
-            let tcp = TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], target.port()))).map_err(|e| e.to_string())?;
-            pump_tcp(&mut ws, tcp, stop)
-        })();
-        tunnels.fetch_sub(1, Ordering::Relaxed);
-        return r;
+        // (the 10 s of the request's read held every chunk that long)
+        ws.get_mut().set_read_timeout(Some(Duration::from_millis(5))).map_err(|e| e.to_string())?;
+        let tcp = TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], target.port()))).map_err(|e| e.to_string())?;
+        return pump_tcp(&mut ws, tcp, stop);
     }
     let mut ws = tungstenite::accept_with_config(stream, Some(datagram_config())).map_err(|e| e.to_string())?;
     let udp = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
@@ -1131,47 +1109,6 @@ mod tests {
         assert!(again, "the datagram came back through the second connection");
         assert!(client.alive.load(Ordering::Relaxed));
         assert_eq!(client.reconnects(), 1);
-    }
-
-    /// Mod streams up to `MAX_TUNNELS`; one more is told `ERR busy` (and its game asks again),
-    /// and a player's session still gets through with every stream taken.
-    #[test]
-    fn mod_streams_never_shut_a_player_out() {
-        let session = UdpSocket::bind("127.0.0.1:0").unwrap();
-        let target = session.local_addr().unwrap();
-        // the mods server at the session's port: holds every stream open
-        let mods = TcpListener::bind(("127.0.0.1", target.port())).unwrap();
-        std::thread::spawn(move || {
-            let mut held = Vec::new();
-            for c in mods.incoming().flatten() {
-                held.push(c);
-            }
-        });
-        let gw = WsGateway::start("127.0.0.1:0".parse().unwrap(), target, ServerInfo::default()).unwrap();
-        let forward = tcp_forward(&format!("ws://{}/tcp", gw.addr)).unwrap();
-        let mut streams: Vec<TcpStream> = (0..MAX_TUNNELS).map(|_| TcpStream::connect(forward).unwrap()).collect();
-        // (each through the gateway to the mods server before the next is counted)
-        std::thread::sleep(Duration::from_millis(500));
-        let mut one_more = TcpStream::connect(forward).unwrap();
-        one_more.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut said = String::new();
-        let _ = one_more.read_to_string(&mut said);
-        assert_eq!(said, "ERR busy\n");
-        // a player joins all the same
-        let player = WsClient::connect(&format!("ws://{}/ws", gw.addr)).unwrap();
-        let t = Instant::now();
-        while gw.connected.load(Ordering::Relaxed) == 0 && t.elapsed() < Duration::from_secs(5) {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(gw.connected.load(Ordering::Relaxed), 1, "the player's session is carried");
-        // and a stream that ends gives its place to the next
-        drop(streams.pop());
-        std::thread::sleep(Duration::from_millis(300));
-        let mut next = TcpStream::connect(forward).unwrap();
-        next.set_read_timeout(Some(Duration::from_millis(800))).unwrap();
-        let mut b = [0u8; 16];
-        assert!(matches!(next.read(&mut b), Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)), "carried, not refused");
-        drop(player);
     }
 
     #[test]

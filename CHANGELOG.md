@@ -4,6 +4,19 @@ Releases are started by hand from `main` as the beta `MAJOR.MINOR.COMMIT`, and t
 promoted to stable releases (see [docs/VERSIONING.md](docs/VERSIONING.md)); the downloads are on the
 [Releases](https://github.com/openOMSI-org/openOMSI/releases) page.
 
+## Unreleased
+
+### Multiplayer
+
+- **Every player sees another player's bus exactly as its driver has it** — the same files,
+  the same paint — fetched from the server by its content when they lack it; a dedicated
+  server keeps every version its players send.
+- **Behaviour change:** a bus that cannot be had as its driver has it (the server takes no
+  uploads, the upload failed, it is too large to fetch) is drawn with another bus — the
+  viewer's copy of that path, else their own — and **labelled** under the player's name.
+  Before, the viewer saw their own copy of that path without being told it was not the
+  driver's. While a bus is still arriving, a neutral box of its size stands in.
+
 ## 0.3.0 - 2026-10-14
 
 A stabilization release: the slowdowns and breakages that came with the updates since 0.2.20,

@@ -432,6 +432,8 @@ fn two_versions_of_a_bus_are_kept_side_by_side_by_their_content() {
 #[test]
 fn a_bus_in_a_paint_is_one_fingerprint() {
     let Some(root) = std::env::var_os("OMSI_ROOT").map(PathBuf::from) else { return };
+    // (working our bus out stops the game's read recording: the test that records takes turns)
+    let _turn = super::super::vehicles::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     omsi_cfg::add_content_root(root.clone());
     let path = omsi_cfg::resolve_path(&root, "Vehicles/MAN_SD200/MAN_SD77.bus");
     let Ok(ty) = omsi_sim::VehicleType::load(&root, &path) else { return };
@@ -453,6 +455,8 @@ fn a_bus_in_a_paint_is_one_fingerprint() {
 
 #[test]
 fn only_what_the_bus_read_goes() {
+    // (the read recording is the game's own: a test working out a bus would stop it midway)
+    let _turn = super::super::vehicles::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = temp("content");
     let original = temp("original");
     let write = |rel: &str, data: &[u8]| {
@@ -476,6 +480,7 @@ fn only_what_the_bus_read_goes() {
         omsi_cfg::vfs::read(p).unwrap();
     }
     let got: Vec<String> = files_of(&original, "Vehicles/ReadBus/bus.bus").into_iter().map(|(r, _)| r).collect();
+    omsi_cfg::vfs::record_reads(false);
     omsi_cfg::remove_content_root(&root);
     assert_eq!(
         got,

@@ -149,7 +149,6 @@ impl Viewer {
     }
 
     pub(super) fn set(&self, fp: &str, w: Wanted) {
-        let ready = matches!(w, Wanted::Local(_) | Wanted::Mounted(_));
         let mut map = self.wanted();
         let before = map.get(fp).map(|e| e.2).unwrap_or(0);
         let fails = match &w {
@@ -163,11 +162,9 @@ impl Viewer {
         if map.len() > 1024 {
             map.retain(|_, (w, at, _)| !matches!(w, Wanted::Failed(_)) || at.elapsed() < std::time::Duration::from_secs(600));
         }
-        drop(map);
-        // (a stand-in shown for it is made again: see `lan::tick`)
-        if ready {
-            omsi_cfg::content_changed();
-        }
+        // (a stand-in shown for it is made again once it is ready: `lan::tick` asks `ready`.
+        // The whole content was said to have changed here, which emptied every lookup cache
+        // and remade every box of the session for each bus that came.)
     }
 
     /// `player` drives the bus `fp`: false when the bus has changed too often of late.

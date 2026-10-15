@@ -21,8 +21,15 @@ const SEASONS: &[&str] = &["wintersnowfall", "wintersnow", "winter", "fall", "sp
 /// The files of `ty` in paint `scheme` (None: its own look), with the depot file `hof` its
 /// displays use. Absolute paths, each an existing file.
 pub(crate) fn of_type(root: &Path, ty: &VehicleType, scheme: Option<usize>, hof: Option<&Path>) -> Vec<PathBuf> {
+    of_parts(root, ty, &[], scheme, hof)
+}
+
+/// `of_type` for a vehicle already loaded with its rear sections (`parts`, front to back):
+/// those are taken as they are instead of being read from the disk again - an articulated
+/// bus's trailer was loaded a second time for its list.
+pub(crate) fn of_parts(root: &Path, ty: &VehicleType, parts: &[&VehicleType], scheme: Option<usize>, hof: Option<&Path>) -> Vec<PathBuf> {
     let mut out = BTreeSet::new();
-    add_type(root, ty, scheme, &mut out, 0);
+    add_type(root, ty, parts, scheme, &mut out, 0);
     if let Some(h) = hof {
         add(&mut out, h.to_path_buf());
     }
@@ -35,7 +42,7 @@ fn add(out: &mut BTreeSet<PathBuf>, p: PathBuf) {
     }
 }
 
-fn add_type(root: &Path, ty: &VehicleType, scheme: Option<usize>, out: &mut BTreeSet<PathBuf>, depth: usize) {
+fn add_type(root: &Path, ty: &VehicleType, parts: &[&VehicleType], scheme: Option<usize>, out: &mut BTreeSet<PathBuf>, depth: usize) {
     let def = &ty.def;
     let here = def.dir();
     add(out, def.path.clone());
@@ -61,9 +68,13 @@ fn add_type(root: &Path, ty: &VehicleType, scheme: Option<usize>, out: &mut BTre
     // the rear sections of an articulated bus, each a vehicle of its own
     if depth < MAX_COUPLED_PARTS {
         if let Some(p) = def.couple_back_path().filter(|p| !out.contains(p)) {
-            match VehicleType::load(root, &p) {
-                Ok(part) => add_type(root, &part, scheme.filter(|i| *i < part.paint_schemes.len()), out, depth + 1),
-                Err(e) => log::warn!("bus files: {}: {e}", p.display()),
+            // (the section the vehicle has loaded already, when it is that file)
+            match parts.split_first().filter(|(part, _)| part.def.path == p) {
+                Some((part, rest)) => add_type(root, part, rest, scheme.filter(|i| *i < part.paint_schemes.len()), out, depth + 1),
+                None => match VehicleType::load(root, &p) {
+                    Ok(part) => add_type(root, &part, &[], scheme.filter(|i| *i < part.paint_schemes.len()), out, depth + 1),
+                    Err(e) => log::warn!("bus files: {}: {e}", p.display()),
+                },
             }
         }
     }

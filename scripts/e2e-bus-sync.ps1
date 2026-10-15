@@ -78,16 +78,17 @@ $logA = Get-Content -Raw (Join-Path $work "A.log")
 $logB = Get-Content -Raw (Join-Path $work "B.log")
 
 $checks = @(
-    @("A worked out its bus's fingerprint", $logA, "bus identity: .*MAN_SD77.* is v1-"),
+    # (fingerprints are v2 - the bus file's path hashed too)
+    @("A worked out its bus's fingerprint", $logA, "bus identity: .*MAN_SD77.* is v2-"),
     @("the server was offered A's SD77", $server, "uploads: a player offers .*MAN_SD77"),
     # (the files it has itself - its installation's, or kept from an earlier run - are not wanted)
     @("of A's SD77 the server wanted only the file that differs", $server, "uploads: a player offers .*MAN_SD77.* \(\d+ files\): 1 wanted"),
     @("the server draws A's SD77 as A has it", $server, "vehicles: .*MAN_SD77.* fetched by its content"),
-    @("the server kept A's SD77, sent only what differs", $server, "uploads: .*MAN_SD77.* is kept as v1-[0-9a-f]+ \(1 files came\)"),
+    @("the server kept A's SD77, sent only what differs", $server, "uploads: .*MAN_SD77.* is kept as v2-[0-9a-f]+ \(1 files came\)"),
     @("B fetched A's SD77 by its content", $logB, "vehicles: .*MAN_SD77.* fetched by its content"),
     @("A drew B's SD80 from its own copy (the same, file for file)", $logA, "vehicles: .*MAN_SD80.* is the same here"),
     @("B offered its stock SD80 and the server wanted no file of it", $server, "uploads: a player offers .*MAN_SD80.* \(\d+ files\): 0 wanted"),
-    @("the server keeps B's SD80 by its fingerprint though it had every file", $server, "uploads: .*MAN_SD80.* is kept (already )?as v1-"),
+    @("the server keeps B's SD80 by its fingerprint though it had every file", $server, "uploads: .*MAN_SD80.* is kept (already )?as v2-"),
     @("B joined through the web gateway and reached the mods through its tunnel", $logB, "through ws://.*/tcp")
 )
 $failed = 0

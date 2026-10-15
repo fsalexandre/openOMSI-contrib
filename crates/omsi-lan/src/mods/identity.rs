@@ -13,7 +13,8 @@
 //! key     the bus file's path (which file of the set is the bus), as a key
 //! for each file, ordered by the bytes of its key:
 //!     u32 LE  length of the key
-//!     key     the path from the game's root, `/`-separated, `.`/`..` resolved, lower case
+//!     key     the path from the game's root, `/`-separated, `.`/`..` resolved, lower case,
+//!             in Unicode's composed form (NFC, `omsi_cfg::name_key`)
 //!     u64 LE  size
 //!     32 B    SHA-256 of the file
 //! fingerprint = "v2-" + hex(SHA-256 of all of the above)
@@ -56,7 +57,10 @@ pub fn key(path: &str) -> Option<String> {
             c => parts.push(c),
         }
     }
-    (!parts.is_empty()).then(|| parts.join("/").to_lowercase())
+    // (lower case and composed - NFC - as the game compares names: `Bahnübergang.dds` copied
+    // from a Mac, where it is often stored with `ü` as `u` + a combining diaeresis, is the
+    // same file, not a second fingerprint of the same bus)
+    (!parts.is_empty()).then(|| omsi_cfg::name_key(&parts.join("/")))
 }
 
 impl VehicleManifest {
@@ -158,6 +162,20 @@ mod tests {
         let one = bus(vec![e("Vehicles/B/b.bus", b"bus"), e("Vehicles/B/ab", b"x")]).validated().unwrap().fingerprint();
         let two = bus(vec![e("Vehicles/B/b.bus", b"bus"), e("Vehicles/B/a", b"x")]).validated().unwrap().fingerprint();
         assert_ne!(one, two);
+    }
+
+    /// A name stored decomposed (NFD, as a Mac often keeps `ü`: `u` + U+0308) is the same file
+    /// as the same name composed: one bus, one fingerprint, on either machine.
+    #[test]
+    fn a_name_in_either_unicode_form_is_one_key() {
+        let composed = "Vehicles/B/Bahn\u{00fc}bergang.dds";
+        let decomposed = "Vehicles/B/Bahnu\u{0308}bergang.dds";
+        assert_ne!(composed, decomposed);
+        assert_eq!(key(composed), key(decomposed));
+        let fp = |p: &str| bus(vec![e("Vehicles/B/b.bus", b"bus"), e(p, b"tex")]).validated().unwrap().fingerprint();
+        assert_eq!(fp(composed), fp(decomposed));
+        // (and the two spellings in one list are one file listed twice)
+        assert!(bus(vec![e("Vehicles/B/b.bus", b"bus"), e(composed, b"1"), e(decomposed, b"2")]).validated().is_err());
     }
 
     /// The same files with a different `bus` are a different bus (v2): a player cannot claim a

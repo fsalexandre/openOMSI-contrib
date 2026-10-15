@@ -435,8 +435,9 @@ impl Buses {
         omsi_cfg::vfs::mount_sealed(&at, v.store.key(), files);
         v.mounted.insert(fp.to_string());
         drop(g);
-        // (what the folder listings knew of that place is old now)
-        omsi_cfg::content_changed();
+        // (what the folder listings knew of that place is old now - of that place only: the
+        // lookups elsewhere stay, and every fetched bus no longer emptied them all)
+        omsi_cfg::content_added_at(&at);
         Some(at)
     }
 

@@ -46,8 +46,9 @@ pub(in crate::mods) fn sender() -> &'static Sender {
 // (what the rest of the game asks, of the game's own sender)
 
 /// Our world and bus have just been made (a joining player, still under the loading screen):
-/// the bus goes to the host now, if it lacks it.
-pub fn begin(root: &Path, bus: &str, paint: &str, own: Vec<PathBuf>) {
+/// the bus goes to the host now, if it lacks it. `own` (the bus's files, `own_files`) is
+/// worked out only when there is a host to send to: a player alone paid for it on every start.
+pub fn begin(root: &Path, bus: &str, paint: &str, own: impl FnOnce() -> Vec<PathBuf>) {
     sender().begin(root, bus, paint, own);
 }
 
@@ -92,27 +93,18 @@ impl Sender {
         *self.at_start.lock().unwrap_or_else(|e| e.into_inner()) = since;
     }
 
-    pub(in crate::mods) fn begin(&'static self, root: &Path, bus: &str, paint: &str, own: Vec<PathBuf>) {
+    pub(in crate::mods) fn begin(&'static self, root: &Path, bus: &str, paint: &str, own: impl FnOnce() -> Vec<PathBuf>) {
         let Some((host, session)) = self.host() else { return };
         if bus.is_empty() || self.refused.load(Ordering::Relaxed) || self.sending.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.busy) {
             return;
         }
+        let own = own();
         self.set_waiting(Some(Instant::now()));
         show("Preparing your bus for the other players...", 0, 0, true);
         let (root, bus, paint) = (root.to_path_buf(), bus.to_string(), paint.to_string());
+        // (no waiting for the game's reads to settle: the list comes from the bus's own
+        // description (`bus_files`); what a run read only feeds a log of what it misses)
         let spawned = std::thread::Builder::new().name("lan-upload".into()).spawn(move || {
-            // (what is read on worker threads still coming in: the list holds still for a moment)
-            let t0 = Instant::now();
-            let mut n = omsi_cfg::vfs::reads().len();
-            let mut still = Instant::now();
-            while still.elapsed() < Duration::from_millis(1500) && t0.elapsed() < Duration::from_secs(20) {
-                std::thread::sleep(Duration::from_millis(250));
-                let now = omsi_cfg::vfs::reads().len();
-                if now != n {
-                    n = now;
-                    still = Instant::now();
-                }
-            }
             let r = match own_manifest(&root, &bus, &paint, own) {
                 Some((_, _, files)) => send_files(&bus, files, host, session, false),
                 None => Err(Failure::from("its files make no valid list")),

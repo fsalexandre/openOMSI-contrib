@@ -789,7 +789,7 @@ impl App {
                 let root = self.args.root.clone();
                 let bus = omsi_lan::game::content_relative(&p.vehicle.ty.def.path, &root);
                 let paint = omsi_lan::game::current_paint(&cfg, &p.vehicle);
-                omsi_lan::mods::upload::begin(&root, &bus, &paint, omsi_lan::mods::upload::own_files(&root, &p.vehicle));
+                omsi_lan::mods::upload::begin(&root, &bus, &paint, || omsi_lan::mods::upload::own_files(&root, &p.vehicle));
             }
             return omsi_lan::mods::upload::loading().is_none();
         };

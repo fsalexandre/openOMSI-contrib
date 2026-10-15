@@ -470,8 +470,10 @@ pub fn windows_components(rel: &str) -> Vec<&str> {
 }
 
 /// How names compare, as on Windows: without regard to case (letters beyond ASCII too -
-/// `Bahnübergang` is `BAHNÜBERGANG`).
-fn name_key(name: &str) -> String {
+/// `Bahnübergang` is `BAHNÜBERGANG`), and in one Unicode form (NFC). Also the form a bus's
+/// file keys take in its fingerprint (the game's `lan_mods::identity`), so a name stored
+/// decomposed on a Mac is the same file there as here.
+pub fn name_key(name: &str) -> String {
     if name.is_ascii() {
         name.to_ascii_lowercase()
     } else {
@@ -498,6 +500,16 @@ pub fn content_changed() {
     CONTENT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     if let Some(l) = LISTINGS.get() {
         l.write().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
+/// Content came at `at` alone (a sealed mount of one bus, see `vfs::mount_sealed`): only the
+/// listings of `at`, of what is inside it and of the folders above it are read again. Unlike
+/// `content_changed`, the caches of lookups elsewhere (textures, depot files) are kept and
+/// the generation stays: every bus fetched from another player emptied them all.
+pub fn content_added_at(at: &Path) {
+    if let Some(l) = LISTINGS.get() {
+        l.write().unwrap_or_else(|e| e.into_inner()).retain(|dir, _| !(at.starts_with(dir) || dir.starts_with(at)));
     }
 }
 

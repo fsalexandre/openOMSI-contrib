@@ -2,6 +2,13 @@
 
 use super::*;
 
+/// A font library shared by the vehicles that use it.
+type SharedFonts = std::sync::Arc<parking_lot::Mutex<omsi_sim::texttex::FontLibrary>>;
+
+/// The fonts of each bus fetched by its content, by its mount (`lan-vehicles/<fingerprint>`:
+/// the same mount is the same files): built once, whatever remakes its vehicle.
+static MOUNT_FONTS: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, SharedFonts>>> = std::sync::LazyLock::new(Default::default);
+
 impl App {
     /// LAN play, once a frame: send our bus, take in the others', and keep a drawn
     /// vehicle for each of them.
@@ -250,9 +257,11 @@ impl omsi_lan::host::LanHost for AppLanHost<'_> {
     ) -> (omsi_sim::VehicleInstance, Option<std::sync::Arc<omsi_vehicle::Hof>>) {
         let world = self.world.expect("another player's vehicle is made with a world loaded");
         let mut host = omsi_sim::VehicleHost::new(clock);
-        // (a bus fetched by its content writes its displays with its own fonts)
+        // (a bus fetched by its content writes its displays with its own fonts - one library
+        // for each such bus, kept: a fresh one for every remake of the vehicle read its fonts
+        // and built their atlases again on the frame)
         let fonts = match fonts_at {
-            Some(at) => std::sync::Arc::new(parking_lot::Mutex::new(omsi_sim::texttex::FontLibrary::only(at))),
+            Some(at) => MOUNT_FONTS.lock().entry(at.to_path_buf()).or_insert_with(|| std::sync::Arc::new(parking_lot::Mutex::new(omsi_sim::texttex::FontLibrary::only(at)))).clone(),
             None => world.fonts.clone(),
         };
         host.font_lib = Some(fonts.clone());

@@ -86,6 +86,9 @@ impl OwnBus {
             return Some((o.manifest.clone(), o.fingerprint.clone(), o.files.clone()));
         }
         let files = chosen(root, bus, own);
+        // (what this run read was only for `chosen`'s log of what the description misses: the
+        // recording stops and its set goes - it was kept, and grew, for the whole session)
+        omsi_cfg::vfs::record_reads(false);
         let bus_rel = omsi_net::vehicle_path(bus).unwrap_or_else(|| bus.to_string());
         let made = crate::mods::identity::VehicleManifest { bus: bus_rel, entries: hashed(&files) }.validated();
         let manifest = match made {
@@ -144,7 +147,9 @@ pub(crate) fn listed(root: &Path, own: Vec<PathBuf>) -> Vec<(String, PathBuf)> {
 /// file: which one a player picked is no part of the bus, and the displays' texts go along
 /// in INFO.)
 pub fn own_files(root: &Path, v: &omsi_sim::VehicleInstance) -> Vec<PathBuf> {
-    crate::mods::bus_files::of_type(root, &v.ty, v.host.paint_scheme.flatten(), None)
+    // (its rear sections as the vehicle has them loaded: not read from the disk again)
+    let parts: Vec<&omsi_sim::VehicleType> = v.trailers.iter().map(|t| &*t.ty).collect();
+    crate::mods::bus_files::of_parts(root, &v.ty, &parts, v.host.paint_scheme.flatten(), None)
 }
 
 /// The files of ours this game has read for `bus`: its folder and the folders its texts
