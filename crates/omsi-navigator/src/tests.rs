@@ -417,3 +417,18 @@ fn the_map_zooms_in_for_a_turn_and_out_on_the_straight() {
     assert!(zoom_target(50.0, None, 30.0) < zoom_target(50.0, None, 5.0));
     assert!(zoom_target(50.0, None, -30.0) >= 150.0);
 }
+
+#[test]
+fn the_maps_layers_are_drawn_in_the_detailed_style_alone() {
+    let mut n = Navigator::new(true, 0.85, "bottom-left");
+    use omsi_map::layers::{self, Layers};
+    n.set_layers(Layers { land: vec![Vec::new(); layers::LAND_CLASSES], paved: vec![Vec::new(); layers::PAVE_CLASSES], ..Default::default() });
+    // (off by default: the roads from the lanes, the layers kept but not drawn)
+    assert!(!n.detailed);
+    assert!(n.layers().is_none());
+    let light = n.look_key();
+    n.detailed = true;
+    assert!(n.layers().is_some());
+    // (turning it on or off builds the ground again)
+    assert_ne!(n.look_key(), light);
+}

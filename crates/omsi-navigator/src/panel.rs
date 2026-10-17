@@ -47,7 +47,7 @@ impl Navigator {
         let lanes_now = net.map(|n| n.lanes.len()).unwrap_or(0);
         let look_key = self.look_key();
         let rebuild = match &self.roads {
-            None => lanes_now > 0 || self.map_data.is_some(),
+            None => lanes_now > 0 || self.layers().is_some(),
             Some(r) => r.look != look_key || (r.anchor - f.bus.truncate()).length() > PANEL_REBUILD || (r.lanes_seen != lanes_now && self.time - r.built_at > 1.5),
         };
         // (on a worker when the map's network is there; the picture keeps the old part meanwhile)
@@ -456,7 +456,7 @@ impl Navigator {
 
     /// A key that changes with everything the ground's look depends on.
     pub(super) fn look_key(&self) -> u64 {
-        (self.light as u64) | (self.show_3d as u64) << 1 | (self.show_surface as u64) << 2 | self.surface_version << 3 | (self.map_version << 20) | (self.roads_version << 36)
+        (self.light as u64) | (self.show_3d as u64) << 1 | (self.show_surface as u64) << 2 | self.surface_version << 3 | (self.map_version << 20) | (self.roads_version << 36) | (self.detailed as u64) << 63
     }
 }
 

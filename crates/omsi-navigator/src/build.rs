@@ -123,14 +123,14 @@ impl Navigator {
     /// worker once per version of the network and of the layers (the whole network's grouping
     /// took the better part of a second); until then the last list, or none.
     pub(super) fn road_list(&mut self, net: &Network) -> Arc<Vec<(MapRoad, bool)>> {
-        let key = (self.global_version << 32) ^ (net.lanes.len() as u64) ^ (self.map_version << 56);
+        let key = (self.global_version << 32) ^ (net.lanes.len() as u64) ^ (self.map_version << 56) ^ ((self.detailed as u64) << 55);
         self.poll_road_job();
         let fresh = self.road_cache.as_ref().is_some_and(|(k, _)| *k == key);
         if !fresh && self.road_job.as_ref().is_none_or(|(k, _)| *k != key) {
             // (the map's own network goes to the worker; a traffic network is small: at once)
             match self.global.clone().filter(|g| g.lanes.len() == net.lanes.len()) {
                 Some(g) => {
-                    let md = self.map_data.clone();
+                    let md = self.layers().cloned();
                     let (tx, rx) = std::sync::mpsc::channel();
                     std::thread::Builder::new()
                         .name("navigator roads".into())
@@ -145,7 +145,7 @@ impl Navigator {
                     self.road_job = Some((key, rx));
                 }
                 None => {
-                    let md = self.map_data.clone();
+                    let md = self.layers().cloned();
                     let list: Vec<(MapRoad, bool)> = road_geometry(net).into_iter().map(|l| {
                         let c = md.as_ref().is_some_and(|m| m.covers(&l.points));
                         (l, c)
@@ -180,7 +180,7 @@ impl Navigator {
         GroundParts {
             roads,
             net: self.global.clone(),
-            md: self.map_data.clone(),
+            md: self.layers().cloned(),
             surface: self.surface.clone().filter(|_| self.show_surface),
         }
     }

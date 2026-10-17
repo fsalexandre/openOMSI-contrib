@@ -266,7 +266,7 @@ impl Navigator {
 
     /// How far the view should tilt at a zoom (0 flat from above … 1 in 3D).
     fn tilt_for(&self, mpp: f64) -> f32 {
-        if !self.city.three_d.unwrap_or(self.show_3d) || self.map_data.is_none() {
+        if !self.city.three_d.unwrap_or(self.show_3d) || self.layers().is_none() {
             return 0.0;
         }
         smoothstep(1.3, 0.45, mpp as f32)
@@ -421,7 +421,7 @@ impl Navigator {
                 hi = hi.max(p.truncate());
             }
         }
-        if let Some((a, b)) = self.map_data.as_ref().and_then(|m| m.extent()) {
+        if let Some((a, b)) = self.layers().and_then(|m| m.extent()) {
             lo = lo.min(a);
             hi = hi.max(b);
         }

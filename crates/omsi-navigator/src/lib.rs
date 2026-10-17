@@ -374,6 +374,10 @@ pub struct Navigator {
     pub map_data: Option<std::sync::Arc<mapmesh::MapData>>,
     map_version: u64,
     layers_rx: Option<std::sync::mpsc::Receiver<mapmesh::MapData>>,
+    /// The detailed style (the `nav_detailed` setting): the map's layers are read and drawn.
+    /// Off, the roads are drawn from the network's lanes, as before: the layers are a million
+    /// vertices around the bus, drawn every frame, and cost a weaker card its frame rate.
+    pub detailed: bool,
     /// Houses standing in 3D (the `nav_3d` setting); flat roofs otherwise.
     pub show_3d: bool,
     /// The navigator is a widget: dragged anywhere and resized by its corner (`nav_widget`).
@@ -554,6 +558,7 @@ impl Navigator {
             map_data: None,
             map_version: 0,
             layers_rx: None,
+            detailed: false,
             show_3d: true,
             widget: true,
             size: 1.0,
@@ -587,13 +592,27 @@ impl Navigator {
         }
     }
 
-    /// Read the whole map's road network on a worker (once per session).
+    /// Read the whole map's road network on a worker (once per session), and the map's own
+    /// layers when the detailed style is on (also once it is turned on later).
     pub fn start_map(&mut self, world: std::sync::Arc<omsi_scene::World>) {
+        // the map's own layers: a worker of their own, they take longer the first time (then
+        // come from the cache in a moment)
+        if self.detailed && self.map_data.is_none() && self.layers_rx.is_none() {
+            let (ltx, lrx) = std::sync::mpsc::channel();
+            let w = world.clone();
+            std::thread::Builder::new()
+                .name("navigator layers".into())
+                .spawn(move || {
+                    let _ = ltx.send(mapmesh::MapData::new(std::sync::Arc::new(omsi_scene::threads::background_pool().install(|| w.map_layers()))));
+                })
+                .ok();
+            self.layers_rx = Some(lrx);
+        }
         if self.building.is_some() || self.global.is_some() {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        let wm = world.clone();
+        let wm = world;
         std::thread::Builder::new()
             .name("navigator map".into())
             .spawn(move || {
@@ -610,19 +629,11 @@ impl Navigator {
             })
             .ok();
         self.building = Some(rx);
-        // the map's own layers: a second worker, they take longer the first time (then come
-        // from the cache in a moment)
-        if self.map_data.is_none() && self.layers_rx.is_none() {
-            let (ltx, lrx) = std::sync::mpsc::channel();
-            let w = world.clone();
-            std::thread::Builder::new()
-                .name("navigator layers".into())
-                .spawn(move || {
-                    let _ = ltx.send(mapmesh::MapData::new(std::sync::Arc::new(omsi_scene::threads::background_pool().install(|| w.map_layers()))));
-                })
-                .ok();
-            self.layers_rx = Some(lrx);
-        }
+    }
+
+    /// The map's layers as the maps draw them: only in the detailed style.
+    pub(crate) fn layers(&self) -> Option<&std::sync::Arc<mapmesh::MapData>> {
+        self.map_data.as_ref().filter(|_| self.detailed)
     }
 
     /// The map's layers, given at once (an offscreen picture reads them on its own thread).

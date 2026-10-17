@@ -313,6 +313,7 @@ impl Offscreen<'_> {
                 nav.show_surface = settings.nav_surface;
                 nav.light = settings.nav_light;
                 nav.show_3d = settings.nav_3d;
+                nav.detailed = settings.nav_detailed;
                 nav.widget = settings.nav_widget;
                 nav.size = settings.nav_size;
                 if omsi_cfg::flags::OMSI_NAV_2D.is_set() {

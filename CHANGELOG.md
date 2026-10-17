@@ -34,6 +34,10 @@ promoted to stable releases (see [docs/VERSIONING.md](docs/VERSIONING.md)); the 
   the stops named after their street name the street.
 - The launcher's route preview draws the same picture: ground, water, rail, paved surfaces
   and houses, the route in blue, the stops on white cards.
+- The detailed style is a setting, `Detailed map (Apple Maps style)`, off by default: its
+  ground is about a million vertices around the bus, drawn every frame, and players with a
+  weaker card lost frames to it. Off, the navigator and the city map draw the roads from the
+  network's lanes as before, with the same cards over them; the map's layers are not read.
 
 - **Content test** in Settings, in place of the launcher's Model test page: any content is
   loaded the way the game loads it and every warning of its files is listed - a bus with the

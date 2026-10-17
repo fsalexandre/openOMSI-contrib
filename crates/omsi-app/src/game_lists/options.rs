@@ -366,6 +366,7 @@ pub(super) fn toggle_now(app: &App, id: &str) -> Option<bool> {
         "nav_surface" => app.menus.navigator.as_ref().map_or(s.nav_surface, |n| n.show_surface),
         "nav_light" => app.menus.navigator.as_ref().map_or(s.nav_light, |n| n.light),
         "nav_3d" => app.menus.navigator.as_ref().map_or(s.nav_3d, |n| n.show_3d),
+        "nav_detailed" => app.menus.navigator.as_ref().map_or(s.nav_detailed, |n| n.detailed),
         "nav_widget" => app.menus.navigator.as_ref().map_or(s.nav_widget, |n| n.widget),
         "shadows" => s.shadows,
         "head" => s.head_movement,
@@ -487,6 +488,13 @@ pub(super) fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static 
             }
             app.settings.nav_3d = on;
             Some(("nav_3d", bit))
+        }
+        "nav_detailed" => {
+            if let Some(n) = app.menus.navigator.as_mut() {
+                n.detailed = on;
+            }
+            app.settings.nav_detailed = on;
+            Some(("nav_detailed", bit))
         }
         "nav_widget" => {
             if let Some(n) = app.menus.navigator.as_mut() {
