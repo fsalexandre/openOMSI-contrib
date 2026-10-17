@@ -17,7 +17,12 @@ pub(super) fn options_pages(app: &App) -> Vec<Page> {
         switch_row(app, "nav_surface", "Map surface under the roads", "Shows the map's ground, water, woods, houses and paved surfaces on the Minimap and the city map (and the map's package, when it has one)"),
         switch_row(app, "nav_light", "Light map", "The Minimap and the city map in a light look"),
         switch_row(app, "nav_detailed", "Detailed map (Apple Maps style)", "The Minimap and the city map drawn from the map itself: every paved surface, the ground and the houses in 3D. Heavier on the graphics card: it can cost frames on a weaker one"),
-        switch_row(app, "nav_3d", "3D buildings on the map", "The houses stand in 3D with their shadows on the Minimap, and the city map tilts into 3D when zoomed in"),
+        if toggle_now(app, "nav_detailed") == Some(true) {
+            switch_row(app, "nav_3d", "3D buildings on the map", "The houses stand in 3D with their shadows on the Minimap, and the city map tilts into 3D when zoomed in")
+        } else {
+            // (the houses come from the map's layers, which only the detailed style reads)
+            Some((row("3D buildings on the map", 'i', "Needs the detailed map", "The houses stand in 3D with their shadows on the Minimap, and the city map tilts into 3D when zoomed in", None), "noop".to_string()))
+        },
         switch_row(app, "nav_widget", "Navigator as a widget", "Drag the Minimap anywhere and change its size at its bottom right corner"),
         switch_row(app, "nav_arrows", "Route arrows (as in OMSI 2)", "Shows OMSI 2's route arrows over the road"),
         pick("navigator_corner", "Corner", later),

@@ -123,9 +123,10 @@ function SelectRow({ row }) {
 }
 
 function ToggleRow({ row }) {
+  const off = row.enable && !row.enable(S.settings);
   return html`<div class="setting-row">
-    <${Name} label=${row.label} help=${row.help} />
-    <${Toggle} checked=${!!S.settings[row.key]} onChange=${(v) => saveSettings({ [row.key]: v })} />
+    <${Name} label=${row.label} help=${off ? row.offHelp : row.help} />
+    <${Toggle} checked=${!!S.settings[row.key]} disabled=${off} onChange=${(v) => saveSettings({ [row.key]: v })} />
   </div>`;
 }
 

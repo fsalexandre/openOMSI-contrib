@@ -4,7 +4,7 @@
 //
 // A row is one of:
 //   { type: 'select', key, label, options, raw?, help?, recheckUpdates? }   options: [value, label] pairs, or (s, boot) => pairs
-//   { type: 'toggle', key, label, help? }
+//   { type: 'toggle', key, label, help?, enable?: (s) => bool, offHelp? }   greyed out while `enable` is false (`offHelp` says why)
 //   { type: 'slider', key, label, min, max, step, def, format, store?, also? }
 //   { type: 'section', title }        { type: 'note', text }
 //   { type: 'button', label, icon, kind?, patch?: (s) => patch, controls?: tab }
@@ -405,7 +405,7 @@ const general = {
         { type: 'toggle', key: 'nav_surface', label: 'Map surface under the roads' },
         { type: 'toggle', key: 'nav_light', label: 'Light map' },
         { type: 'toggle', key: 'nav_detailed', label: 'Detailed map (Apple Maps style)', help: 'The Minimap and the city map drawn from the map itself: every paved surface, the ground and the houses in 3D. Heavier on the graphics card: it can cost frames on a weaker one' },
-        { type: 'toggle', key: 'nav_3d', label: '3D buildings on the map' },
+        { type: 'toggle', key: 'nav_3d', label: '3D buildings on the map', enable: (s) => !!s.nav_detailed, offHelp: 'Needs the detailed map' },
         { type: 'toggle', key: 'nav_widget', label: 'Navigator as a widget (drag it anywhere, size it at its corner)' },
         { type: 'slider', key: 'nav_size', label: 'Navigator size', min: 0.6, max: 2, step: 0.05, def: 1, format: (v) => `${Math.round(v * 100)} %` },
         { type: 'custom', id: 'corner' },
